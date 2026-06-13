@@ -1,5 +1,11 @@
 # ESP32 I2C SHA-256 Mining Cluster (2 buses × 5 slaves)
 
+> **⚠️ 2026 reality check — host your own stratum server.** When running a system
+> like this in 2026, hosting your own stratum server is essential. No matter the
+> coin being mined, to get the most out of your fun little cluster — and to get
+> more than one share accepted every few hours — running your own stratum server
+> is a must.
+
 An ESP32 master coordinating **10 slave MCUs** over **two I2C buses** to run a
 distributed SHA-256 Stratum miner, with a live ST7789 cyberpunk dashboard.
 
