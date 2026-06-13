@@ -1,0 +1,39 @@
+# ============================================================
+# Secrets - NEVER commit real WiFi/pool/wallet credentials
+# ============================================================
+secrets.h
+**/secrets.h
+*.secret
+.env
+.env.*
+
+# ============================================================
+# Arduino / PlatformIO build artifacts
+# ============================================================
+build/
+.build/
+*.bin
+*.elf
+*.hex
+*.map
+*.o
+*.d
+*.a
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Arduino IDE local cache / sketch build output
+**/build/
+*.tmp
+
+# ============================================================
+# Editor / OS
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
