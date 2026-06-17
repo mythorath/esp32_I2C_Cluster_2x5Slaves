@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chimera Lenia</title>
+<style>
+  :root { --bg:#05060a; --panel:#0c1018; --grid:#1b2330; --a:#22e0a0; --b:#e056c8;
+          --cyan:#22d3ee; --amber:#f5a623; --txt:#cdd6e4; --dim:#6b7689; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:13px/1.4 ui-monospace,Menlo,Consolas,monospace; }
+  header { padding:10px 16px; border-bottom:1px solid var(--grid); display:flex;
+           align-items:baseline; gap:12px; }
+  header h1 { margin:0; font-size:18px; letter-spacing:2px; color:var(--cyan); }
+  header .sub { color:var(--dim); }
+  .wrap { display:flex; gap:16px; padding:16px; flex-wrap:wrap; }
+  .stage { background:var(--panel); border:1px solid var(--grid); border-radius:8px;
+           padding:10px; }
+  canvas { image-rendering:pixelated; display:block; border-radius:4px; background:#000; }
+  .side { flex:1; min-width:260px; display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--grid); border-radius:8px; padding:12px; }
+  .card h2 { margin:0 0 8px; font-size:12px; letter-spacing:1px; color:var(--dim);
+             text-transform:uppercase; }
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
+  .stat b { color:#fff; font-weight:600; }
+  .bankA { color:var(--a); } .bankB { color:var(--b); }
+  .bars { display:flex; flex-direction:column; gap:4px; }
+  .bar { display:flex; align-items:center; gap:6px; }
+  .bar .lab { width:26px; color:var(--dim); }
+  .bar .track { flex:1; height:10px; background:var(--grid); border-radius:3px; overflow:hidden; }
+  .bar .fill { height:100%; }
+  #log { max-height:220px; overflow:auto; }
+  #log div { padding:2px 0; border-bottom:1px solid #131a25; }
+  .conn { font-size:11px; }
+  .ok { color:var(--a); } .no { color:#e0556c; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CHIMERA&nbsp;LENIA</h1>
+  <span class="sub">two hemispheres, one mind &mdash; distributed continuous artificial life</span>
+  <span id="conn" class="conn no" style="margin-left:auto">connecting&hellip;</span>
+</header>
+<div class="wrap">
+  <div class="stage">
+    <canvas id="field" width="256" height="600"></canvas>
+  </div>
+  <div class="side">
+    <div class="card">
+      <h2>World vitals</h2>
+      <div class="stats">
+        <div class="stat">gen <b id="gen">0</b></div>
+        <div class="stat">nodes <b id="online">0/10</b></div>
+        <div class="stat">mass <b id="mass">0</b></div>
+        <div class="stat">entropy <b id="entropy">0</b></div>
+        <div class="stat">best fit <b id="fit">0</b></div>
+        <div class="stat">coupling <b id="couple">0</b></div>
+        <div class="stat">organisms <b id="orgs">0</b></div>
+        <div class="stat">births <b id="births">0</b></div>
+        <div class="stat">migrations <b id="migr">0</b></div>
+        <div class="stat">seam xings <b id="seam">0</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Fitness landscape (per strip)</h2>
+      <div id="bars" class="bars"></div>
+    </div>
+    <div class="card">
+      <h2>Fossil record / events</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+<script>
+const W = 64, H = 200, SX = 4, SY = 3;        // upscale factor
+const cv = document.getElementById('field');
+cv.width = W * SX; cv.height = H * SY;
+const ctx = cv.getContext('2d');
+const off = document.createElement('canvas'); off.width = W; off.height = H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(W, H);
+
+function paletteA(t){ return [ (t*t*255)|0, (t*255)|0, ((1-t)*120*t*2)|0 ]; }
+function paletteB(t){ return [ (t*255)|0, (t*t*180)|0, ((1-t*0.5)*200*t)|0 ]; }
+
+function drawField(buf){
+  // buf: Uint8Array of W*H after 3-byte header
+  const stripH = H / 10;
+  for(let r=0;r<H;r++){
+    const strip = (r / stripH)|0;
+    const pa = strip < 5;
+    for(let c=0;c<W;c++){
+      const t = buf[r*W+c] / 255;
+      const rgb = pa ? paletteA(t) : paletteB(t);
+      const o = (r*W+c)*4;
+      img.data[o]=rgb[0]; img.data[o+1]=rgb[1]; img.data[o+2]=rgb[2]; img.data[o+3]=255;
+    }
+  }
+  octx.putImageData(img,0,0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(off,0,0,W,H,0,0,cv.width,cv.height);
+  // seam line between strip 4 and 5
+  ctx.strokeStyle='rgba(245,166,35,0.7)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0, 5*stripH*SY); ctx.lineTo(cv.width, 5*stripH*SY); ctx.stroke();
+}
+
+function setText(id,v){ const e=document.getElementById(id); if(e) e.textContent=v; }
+function fmt(x){ return (typeof x==='number') ? x.toFixed(2) : x; }
+
+function applyVitals(v){
+  setText('gen', v.gen); setText('online', v.online+'/10');
+  setText('mass', fmt(v.mass)); setText('entropy', fmt(v.entropy));
+  setText('fit', fmt(v.bestFitness)); setText('couple', fmt(v.coupling));
+  setText('orgs', v.organisms); setText('births', v.births);
+  setText('migr', v.migrations); setText('seam', v.seamCrossings);
+}
+
+function logEvent(type, text){
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  const cls = type && type.indexOf('migr')>=0 ? 'bankB' : (type==='birth'?'bankA':'');
+  d.innerHTML = '<span class="'+cls+'">['+type+']</span> '+text;
+  el.prepend(d);
+  while(el.childNodes.length>120) el.removeChild(el.lastChild);
+}
+
+function buildBars(){
+  const b=document.getElementById('bars'); b.innerHTML='';
+  for(let i=0;i<10;i++){
+    const row=document.createElement('div'); row.className='bar';
+    row.innerHTML='<span class="lab '+(i<5?'bankA':'bankB')+'">'+(i<5?'A':'B')+i%5+'</span>'+
+      '<span class="track"><span class="fill" id="f'+i+'" style="width:0%;background:'+
+      (i<5?'var(--a)':'var(--b)')+'"></span></span>';
+    b.appendChild(row);
+  }
+}
+function updateBars(strips){
+  if(!strips) return;
+  let max=0.001; strips.forEach(s=>{max=Math.max(max,s.fitness||0)});
+  strips.forEach(s=>{ const f=document.getElementById('f'+s.strip);
+    if(f) f.style.width = Math.min(100,100*(s.fitness||0)/max)+'%'; });
+}
+
+buildBars();
+let host = location.hostname || '192.168.1.50';
+let ws;
+function connect(){
+  ws = new WebSocket('ws://'+host+':81/');
+  ws.binaryType='arraybuffer';
+  ws.onopen = ()=>{ const c=document.getElementById('conn'); c.textContent='live'; c.className='conn ok'; };
+  ws.onclose = ()=>{ const c=document.getElementById('conn'); c.textContent='reconnecting'; c.className='conn no'; setTimeout(connect,1500); };
+  ws.onmessage = (ev)=>{
+    if(ev.data instanceof ArrayBuffer){
+      const a=new Uint8Array(ev.data);
+      if(a[0]===0xCA) drawField(a.subarray(3));
+    } else {
+      try{ const m=JSON.parse(ev.data);
+        if(m.t==='vitals') applyVitals(m);
+        else if(m.t==='event') logEvent(m.type,m.text);
+      }catch(e){}
+    }
+  };
+}
+connect();
+// also poll /api for per-strip fitness bars
+setInterval(()=>fetch('http://'+host+'/api').then(r=>r.json())
+  .then(d=>updateBars(d.strips)).catch(()=>{}), 2000);
+</script>
+</body>
+</html>
