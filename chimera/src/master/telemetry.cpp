@@ -29,6 +29,11 @@ namespace chimera {
 
 static WebSocketsClient ws;
 static TelemetryClient* g_self = nullptr;
+static int replayBudget_ = 0;   // cap durable replay per handshake (keeps WS alive)
+
+static void pumpWs() { ws.loop(); }
+
+void TelemetryClient::service() { pumpWs(); }
 
 // ----- helpers to emit the JSON envelopes (shared by live + replay) -----
 static void sendEventJson(uint32_t eseq, const LineageEvent& e) {
@@ -70,13 +75,17 @@ static void sendSnapJson(uint32_t vseq, const VitalsSnap& v) {
 // replay trampolines (LogStream::ReplayCb)
 static void replayEventCb(uint32_t seq, const uint8_t* payload, uint8_t len, void*) {
     if (len < sizeof(LineageEvent)) return;
+    if (replayBudget_-- <= 0) return;
     LineageEvent e; memcpy(&e, payload, sizeof(e));
     sendEventJson(seq, e);
+    pumpWs();
 }
 static void replaySnapCb(uint32_t seq, const uint8_t* payload, uint8_t len, void*) {
     if (len < sizeof(VitalsSnap)) return;
+    if (replayBudget_-- <= 0) return;
     VitalsSnap v; memcpy(&v, payload, sizeof(v));
     sendSnapJson(seq, v);
+    pumpWs();
 }
 
 static void lineageSinkTrampoline(const LineageEvent& e, void* ctx) {
@@ -113,9 +122,113 @@ static void onWsText(uint8_t* payload, size_t len) {
 
 static void onWsEvent(WStype_t type, uint8_t* payload, size_t len) {
     switch (type) {
-        case WStype_CONNECTED: sendHello(); break;
-        case WStype_TEXT:      onWsText(payload, len); break;
-        default: break;
+        case WStype_CONNECTED:
+            Serial.println("[telemetry] Selis WS connected");
+            replayBudget_ = 32;   // replay a small gap per connect; rest on later acks
+            sendHello();
+            break;
+        case WStype_DISCONNECTED:
+            Serial.println("[telemetry] Selis WS disconnected");
+            break;
+        case WStype_TEXT:
+            onWsText(payload, len);
+            break;
+        default:
+            break;
+    }
+}
+
+static const char* wifiStatusName(wl_status_t s) {
+    switch (s) {
+        case WL_IDLE_STATUS: return "IDLE";
+        case WL_NO_SSID_AVAIL: return "NO_SSID";
+        case WL_SCAN_COMPLETED: return "SCAN_DONE";
+        case WL_CONNECTED: return "CONNECTED";
+        case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+        case WL_CONNECTION_LOST: return "LOST";
+        case WL_DISCONNECTED: return "DISCONNECTED";
+        default: return "UNKNOWN";
+    }
+}
+
+void TelemetryClient::startWs() {
+    if (wsStarted_) return;
+    String host = SELIS_HOST;
+    if (host.endsWith(".local")) {
+        if (MDNS.begin("chimera-master")) {
+            IPAddress r = MDNS.queryHost(host.substring(0, host.length() - 6));
+            if (r) host = r.toString();
+        }
+    }
+    ws.begin(host.c_str(), (uint16_t)SELIS_PORT, SELIS_PATH);
+    ws.onEvent([](WStype_t t, uint8_t* p, size_t l) { onWsEvent(t, p, l); });
+    ws.setReconnectInterval(3000);
+    wsStarted_ = true;
+    Serial.printf("dialing Selis ws://%s:%d%s\n", host.c_str(), SELIS_PORT, SELIS_PATH);
+}
+
+bool TelemetryClient::connectWifi(uint32_t waitMs) {
+    if (!ssid_[0]) return false;
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid_, pass_);
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < waitMs) {
+        pumpWs();
+        delay(10);
+    }
+    wifiOk_ = WiFi.status() == WL_CONNECTED;
+    if (wifiOk_) {
+        strncpy(ip_, WiFi.localIP().toString().c_str(), sizeof(ip_) - 1);
+        Serial.printf("WiFi OK (%s) RSSI=%d\n", ip_, WiFi.RSSI());
+        startWs();
+        return true;
+    }
+    Serial.printf("WiFi failed (%s) after %lums\n", wifiStatusName(WiFi.status()),
+                  (unsigned long)waitMs);
+    int n = WiFi.scanNetworks();
+    bool seen = false;
+    for (int i = 0; i < n; i++) {
+        if (WiFi.SSID(i) == ssid_) { seen = true; break; }
+    }
+    Serial.printf("scan: %d APs, SSID \"%s\" %s\n", n, ssid_, seen ? "VISIBLE" : "NOT FOUND");
+    return false;
+}
+
+void TelemetryClient::maintainWifi() {
+    if (wifiOk_) {
+        if (WiFi.status() != WL_CONNECTED) {
+            wifiOk_ = false;
+            ip_[0] = '\0';
+            wsStarted_ = false;
+            ws.disconnect();
+            Serial.println("WiFi dropped");
+        }
+        return;
+    }
+    if (!ssid_[0]) return;
+    uint32_t now = millis();
+    if (!wifiConnecting_ && now - lastWifiTryMs_ > 10000) {
+        lastWifiTryMs_ = now;
+        wifiConnecting_ = true;
+        wifiConnectStartMs_ = now;
+        WiFi.begin(ssid_, pass_);
+        Serial.println("WiFi retry...");
+    }
+    if (!wifiConnecting_) return;
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnecting_ = false;
+        wifiOk_ = true;
+        strncpy(ip_, WiFi.localIP().toString().c_str(), sizeof(ip_) - 1);
+        Serial.printf("WiFi OK (%s) RSSI=%d\n", ip_, WiFi.RSSI());
+        startWs();
+        return;
+    }
+    if (now - wifiConnectStartMs_ > 20000) {
+        wifiConnecting_ = false;
+        Serial.printf("WiFi retry timed out (%s)\n", wifiStatusName(WiFi.status()));
     }
 }
 
@@ -129,30 +242,15 @@ bool TelemetryClient::begin(const char* ssid, const char* pass) {
         vitLog_.begin(LittleFS, "/vit", true);   // vitals: evictable under pressure
     }
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, pass);
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) delay(250);
-    wifiOk_ = WiFi.status() == WL_CONNECTED;
-    if (wifiOk_) {
-        strncpy(ip_, WiFi.localIP().toString().c_str(), sizeof(ip_) - 1);
-        // Resolve selis.local via mDNS (DHCP-proof); else use the configured host.
-        String host = SELIS_HOST;
-        if (host.endsWith(".local")) {
-            if (MDNS.begin("chimera-master")) {
-                IPAddress r = MDNS.queryHost(host.substring(0, host.length() - 6));
-                if (r) host = r.toString();
-            }
-        }
-        ws.begin(host.c_str(), (uint16_t)SELIS_PORT, SELIS_PATH);
-        ws.onEvent([](WStype_t t, uint8_t* p, size_t l) { onWsEvent(t, p, l); });
-        ws.setReconnectInterval(3000);
-    }
-    return wifiOk_;
+    strncpy(ssid_, ssid ? ssid : "", sizeof(ssid_) - 1);
+    strncpy(pass_, pass ? pass : "", sizeof(pass_) - 1);
+    return connectWifi(45000);   // patient connect (mining firmware waited forever)
 }
 
 void TelemetryClient::loop() {
-    ws.loop();
+    pumpWs();
+    maintainWifi();
+    if (wifiOk_ && !wsStarted_) startWs();
     // T2b vitals snapshot sampler (durable), decoupled from the field cadence.
     if (vitals_ && millis() - lastSnapMs_ > VITALS_SNAP_MS) {
         lastSnapMs_ = millis();
@@ -180,6 +278,7 @@ void TelemetryClient::broadcastField(const Stitch& stitch) {
     frame_[3] = (uint8_t)nch;                 // species count (new field)
     memcpy(frame_ + 4, stitch.fieldMulti(), bytes);
     ws.sendBIN(frame_, 4 + bytes);
+    pumpWs();
 }
 
 void TelemetryClient::broadcastVitals(const WorldVitals& v) {
@@ -201,6 +300,7 @@ void TelemetryClient::broadcastVitals(const WorldVitals& v) {
     d["migrations"] = v.migrations;
     d["seamCrossings"] = v.seamCrossings;
     String s; serializeJson(d, s); ws.sendTXT(s);
+    pumpWs();
 }
 
 void TelemetryClient::pushEvent(const char* type, const char* text) {

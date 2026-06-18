@@ -33,7 +33,9 @@ public:
     void onFossil(const LineageEvent& e);
 
     bool connected() const;
+    bool wifiLinked() const { return wifiOk_; }
     const char* ip() const { return ip_; }
+    void service();   // pump WebSocket + WiFi (call during long I2C work)
 
     LogStream& events() { return evLog_; }
     LogStream& vitals() { return vitLog_; }
@@ -42,9 +44,19 @@ private:
     const WorldVitals* vitals_ = nullptr;
     const StripStats*  stats_ = nullptr;
     char ip_[20] = {0};
+    char ssid_[33] = {0};
+    char pass_[65] = {0};
     bool wifiOk_ = false;
+    bool wsStarted_ = false;
     uint8_t* frame_ = nullptr;   // [0xCA][w][h][nch][nch planes], heap (begin())
     uint32_t lastSnapMs_ = 0;
+    uint32_t lastWifiTryMs_ = 0;
+    uint32_t wifiConnectStartMs_ = 0;
+    bool wifiConnecting_ = false;
+
+    void startWs();
+    bool connectWifi(uint32_t waitMs);
+    void maintainWifi();
 
     LogStream evLog_;
     LogStream vitLog_;

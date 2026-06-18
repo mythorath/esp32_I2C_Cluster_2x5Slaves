@@ -115,6 +115,7 @@ static void bringUp(uint32_t windowMs) {
             Serial.printf("  online %d/%d  (%.1fs)\n", n, N_STRIPS, (millis() - start) / 1000.0f);
         }
         if (n == N_STRIPS) break;
+        web.service();
         delay(250);
     }
     printInventory();
@@ -151,8 +152,14 @@ void setup() {
     Serial.println("================================");
 
     display.begin();
-    display.boot("booting...");
+    display.boot("wifi...");
 
+    // Start WiFi early so it can associate while the cluster bring-up runs.
+    bool linked = web.begin(WIFI_SSID, WIFI_PASSWORD);
+    web.attach(&vitals, stats);
+    web.registerSink(lineage);
+
+    display.boot("cluster...");
     bus.begin();
     delay(2500);   // longer settle for simultaneous power-on (S3 PSRAM boot is slower)
 
@@ -164,19 +171,13 @@ void setup() {
 
     bringUp(BRINGUP_MS);   // patient join window + seed each node as it appears
 
-    // Telemetry/persistence always comes up (the durable spool records even
-    // headless); WiFi/Selis is an optional sink. Never a dependency of the loop.
-    display.boot("link...");
-    bool linked = web.begin(WIFI_SSID, WIFI_PASSWORD);
-    web.attach(&vitals, stats);
-    web.registerSink(lineage);     // fossil events -> durable spool + Selis
     narrator.begin(&web);
-    if (linked) Serial.printf("WiFi OK (%s) -> dialing Selis\n", web.ip());
-    else        Serial.println("no WiFi - running headless (spooling to flash)");
+    if (linked) Serial.printf("Selis telemetry ready (%s)\n", web.ip());
+    else        Serial.println("no WiFi yet - running headless (will retry, spooling to flash)");
 
     // record network + node status for the display
-    vitals.wifiOk = linked;
-    strncpy(vitals.ip, linked ? web.ip() : "headless", sizeof(vitals.ip) - 1);
+    vitals.wifiOk = web.wifiLinked();
+    strncpy(vitals.ip, vitals.wifiOk ? web.ip() : "headless", sizeof(vitals.ip) - 1);
     for (int i = 0; i < N_STRIPS; i++) vitals.nodeOnline[i] = bus.online(i);
 
     // show the inventory immediately, before the first generation
@@ -185,18 +186,23 @@ void setup() {
 }
 
 void loop() {
+    web.service();
+
     // ---- hot path: one generation ----
     // Bare tick (no genome) so nodes don't recompute kernel+LUT every gen;
     // evolution pushes changed genomes via CMD_SET_GENOME only when they change.
     bus.tickAll();
+    web.service();
     bus.barrier(1500);   // demotes any stuck node; reconcile() re-admits it later
+    web.service();
     haloEv = HaloEvents();
     router.collect(bus);
+    web.service();
     router.route(bus, &haloEv);
     if (haloEv.seamCrossings) leds.onSeamCrossing(haloEv.seamCrossings);
     generation++;
 
-    web.loop();
+    web.service();
 
     // ---- membership reconciliation: hot-join late/recovered nodes ----
     if (millis() - lastReconcile > RECONCILE_MS) {
@@ -211,9 +217,17 @@ void loop() {
         lastSlow = millis();
         gatherVitals();
 
+        // Refresh network status on the LCD once WiFi comes up (or drops).
+        bool wifiNow = web.wifiLinked();
+        if (wifiNow != vitals.wifiOk) {
+            vitals.wifiOk = wifiNow;
+            strncpy(vitals.ip, wifiNow ? web.ip() : "headless", sizeof(vitals.ip) - 1);
+        }
+
         evolution.update(bus, stats, genomes, vitals, generation, &leds, &lineage);
 
         int n = stitch.collect(bus);
+        web.service();
         if (n) {
             detector.update(stitch, generation, vitals, &lineage, &leds, &web);
             vitals.organismsAlive = detector.aliveCount();
@@ -222,6 +236,7 @@ void loop() {
         }
         display.renderVitals(vitals, detector.newest());
         web.broadcastVitals(vitals);
+        web.service();
         narrator.update(vitals, detector, generation);
         leds.update();
 
@@ -230,4 +245,6 @@ void loop() {
                       vitals.bestFitness, vitals.bestStrip, (unsigned long)vitals.organismsAlive,
                       (unsigned long)vitals.seamCrossings, (unsigned long)bus.bulkFails, bus.lastFailStrip);
     }
+
+    web.service();
 }
