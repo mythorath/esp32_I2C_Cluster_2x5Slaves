@@ -12,7 +12,7 @@
 #include "stitch.h"
 #include "lineage.h"
 #include "led_events.h"
-#include "webserver.h"
+#include "telemetry.h"
 
 namespace chimera {
 
@@ -20,7 +20,7 @@ class Detector {
 public:
     void begin();   // allocate label/stack buffers on the heap (static DRAM is tight)
     void update(const Stitch& stitch, uint32_t gen, WorldVitals& vitals,
-                Lineage* lineage, LedEvents* leds, WebViz* web);
+                Lineage* lineage, LedEvents* leds, TelemetryClient* web);
 
     int aliveCount() const;
     const Organism* newest() const;

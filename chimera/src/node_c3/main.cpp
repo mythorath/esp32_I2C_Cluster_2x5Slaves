@@ -27,8 +27,13 @@ static constexpr int PIN_ATTN = 1;
 static const uint8_t MY_ADDR = C3_ADDR_BASE + NODE_INDEX;
 
 static LeniaStrip<FixedPolicy> strip;
-static uint16_t bufA[TOTAL];
-static uint16_t bufB[TOTAL];
+static uint16_t bufA[NCH * TOTAL];
+static uint16_t bufB[NCH * TOTAL];
+
+// Downsampled 2-channel tile: [ch][DS_H_STRIP][DS_W], channel-major.
+static constexpr int DS_W = WORLD_W / 2;
+static constexpr int DS_H_STRIP = STRIP_H / 2;
+static constexpr int TILE_PLANE = DS_W * DS_H_STRIP;
 
 static uint8_t haloTop[HALO_BYTES];
 static uint8_t haloBottom[HALO_BYTES];
@@ -53,7 +58,7 @@ static volatile uint8_t seedPat = SEED_ORBIUM;
 static volatile uint32_t seedVal = 0;
 
 static uint8_t txFrame[CHUNK_FRAME_MAX];
-static uint8_t tileBuf[(STRIP_H / 2) * (WORLD_W / 2)];
+static uint8_t tileBuf[TILE_PLANE * NCH];   // 2 species planes
 
 void onReceive(int n) {
     int i = 0;
@@ -123,13 +128,15 @@ void onRequest() {
 }
 
 static void buildTile() {
-    int k = 0;
-    for (int r = 0; r < STRIP_H; r += 2)
-        for (int c = 0; c < WORLD_W; c += 2) {
-            float u = strip.interiorGet(r, c) * (1.0f / 65535.0f);
-            int v = (int)(u * 255.0f + 0.5f);
-            tileBuf[k++] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-        }
+    for (int ch = 0; ch < NCH; ch++) {
+        int k = ch * TILE_PLANE;
+        for (int r = 0; r < STRIP_H; r += 2)
+            for (int c = 0; c < WORLD_W; c += 2) {
+                float u = strip.interiorGet(ch, r, c) * (1.0f / 65535.0f);
+                int v = (int)(u * 255.0f + 0.5f);
+                tileBuf[k++] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            }
+    }
 }
 
 static void computeGeneration(bool fromMaster) {
@@ -150,17 +157,21 @@ static void computeGeneration(bool fromMaster) {
 }
 
 static void dumpSerial() {
-    static const char ramp[] = " .:-=+*#%@";
-    Serial.printf("\n[C3 %02X] gen=%lu mass=%.3f act=%.3f ent=%.3f fit=%.3f\n",
-                  MY_ADDR, (unsigned long)strip.generation(), stats.mass, stats.activity,
-                  stats.entropy, stats.fitness);
+    // prey (species 0) lowercase ramp, predator (species 1) uppercase, so both
+    // species and their overlap read at a glance over serial.
+    static const char rampP[] = " .:-=+*";   // prey
+    static const char rampD[] = " oO0@#%";   // predator (wins ties)
+    Serial.printf("\n[C3 %02X] gen=%lu mass=%.3f sp1=%.3f act=%.3f fit=%.3f\n",
+                  MY_ADDR, (unsigned long)strip.generation(), stats.mass, stats.mass1,
+                  stats.activity, stats.fitness);
     for (int r = 0; r < STRIP_H; r += 2) {
         char line[WORLD_W / 2 + 1];
         int k = 0;
         for (int c = 0; c < WORLD_W; c += 2) {
-            float u = strip.interiorGet(r, c) * (1.0f / 65535.0f);
-            int idx = (int)(u * 9.0f);
-            line[k++] = ramp[idx < 0 ? 0 : (idx > 9 ? 9 : idx)];
+            float p = strip.interiorGet(0, r, c) * (1.0f / 65535.0f);
+            float d = strip.interiorGet(1, r, c) * (1.0f / 65535.0f);
+            if (d >= p) { int i = (int)(d * 6.0f); line[k++] = rampD[i < 0 ? 0 : (i > 6 ? 6 : i)]; }
+            else        { int i = (int)(p * 6.0f); line[k++] = rampP[i < 0 ? 0 : (i > 6 ? 6 : i)]; }
         }
         line[k] = '\0';
         Serial.println(line);
@@ -173,7 +184,7 @@ void setup() {
     Serial.printf("\n=== Chimera Lenia node C3 (Bank A/fixed) addr=0x%02X ===\n", MY_ADDR);
 
     strip.attach(bufA, bufB);
-    strip.setGenome(defaultGenome(BANK_A));
+    strip.setGenome(instinctGenome(BANK_A));   // Bank A = fast/volatile two-species ecology
     strip.seed(SEED_ORBIUM);
 
     pinMode(PIN_ATTN, INPUT_PULLDOWN);

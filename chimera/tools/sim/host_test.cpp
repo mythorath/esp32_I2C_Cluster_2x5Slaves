@@ -20,7 +20,7 @@ using namespace chimera;
 
 template <class Policy>
 bool run(const char* name, const Genome& g) {
-    static typename Policy::State a[TOTAL], b[TOTAL];
+    static typename Policy::State a[NCH * TOTAL], b[NCH * TOTAL];
     LeniaStrip<Policy> strip;
     strip.attach(a, b);
     strip.setGenome(g);

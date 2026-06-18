@@ -23,10 +23,16 @@ static constexpr int   KERNEL_R  = 13;    // kernel radius = halo depth
 static constexpr int   N_STRIPS  = 10;    // 5 Bank A (C3) + 5 Bank B (S3)
 static constexpr int   WORLD_H   = STRIP_H * N_STRIPS;  // 400
 
+// Species/channels: 2 interacting species (multi-channel Lenia). Channel 0 =
+// "prey", channel 1 = "predator". Both banks carry both species; the banks
+// differ in dynamics (instinct vs memory), not in channel count.
+static constexpr int   NCH = 2;
+
 static constexpr int   KERNEL_DIM = 2 * KERNEL_R + 1;   // 27
 static constexpr int   BUF_H      = STRIP_H + 2 * KERNEL_R;  // interior + 2 halos
 static constexpr int   HALO_ROWS  = KERNEL_R;
-static constexpr int   HALO_BYTES = WORLD_W * HALO_ROWS;    // 1664 (uint8 quantized)
+static constexpr int   HALO_PLANE = WORLD_W * HALO_ROWS;    // 1664 (one species, uint8)
+static constexpr int   HALO_BYTES = HALO_PLANE * NCH;      // 3328 (both species stacked)
 
 // ---------------------------------------------------------------------------
 // I2C addressing. Bus 0 = S3 (Bank B), Bus 1 = C3 (Bank A) - matches wiring.
@@ -103,8 +109,9 @@ struct __attribute__((packed)) StripStats {
     uint8_t  status;     // NodeStatus
     uint8_t  bank;       // 0 = A (C3/fixed), 1 = B (S3/float)
     uint16_t gen_lo;     // low 16 bits of generation counter
-    float    mass;       // sum(A) / (W*H_strip)  in [0,1]
-    float    activity;   // fraction of cells changed > eps last gen
+    float    mass;       // total sum(A0+A1) / (W*H_strip)  in [0,~2]
+    float    mass1;      // species-1 (predator) mass fraction (species split for viz)
+    float    activity;   // fraction of cells changed > eps last gen (both species)
     float    entropy;    // normalized spatial entropy [0,1]
     float    com_y;      // center of mass row (interior coords) or NaN
     float    com_x;      // center of mass col or NaN

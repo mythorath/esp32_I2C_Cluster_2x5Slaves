@@ -34,7 +34,10 @@ static LeniaStrip<FloatPolicy> strip;
 // Temporal-fitness window. Kept small so it fits INTERNAL RAM when PSRAM is
 // absent/unconfigured (PSRAM is used if available, else internal). 6 frames is
 // plenty for lag-1 persistence; bump back up once PSRAM is confirmed working.
-static const int HIST_N = 6;
+static const int HIST_N = 4;   // 2-channel float buffers are larger; keep history modest
+// Bank B "memory": fraction of the previous field blended back each gen -> the
+// memory bank's organisms persist and trail (vs the instinct bank's sharp ones).
+static constexpr float MEMORY_ECHO = 0.25f;
 
 // ----- staged transfer buffers (filled after each generation) -----
 static uint8_t haloTop[HALO_BYTES];      // our top edge, for neighbor above
@@ -66,7 +69,11 @@ static volatile uint8_t seedPat = SEED_ORBIUM;
 static volatile uint32_t seedVal = 0;
 
 static uint8_t txFrame[CHUNK_FRAME_MAX];
-static uint8_t tileBuf[(STRIP_H / 2) * (WORLD_W / 2)];  // downsampled tile
+// Downsampled 2-channel tile: [ch][DS_H_STRIP][DS_W], channel-major.
+static constexpr int DS_W = WORLD_W / 2;
+static constexpr int DS_H_STRIP = STRIP_H / 2;
+static constexpr int TILE_PLANE = DS_W * DS_H_STRIP;
+static uint8_t tileBuf[TILE_PLANE * NCH];   // 2 species planes
 
 // --------------------------------------------------------------------------
 // I2C receive: first byte is the opcode/command.
@@ -148,9 +155,11 @@ void onRequest() {
 static void pushHistory() {
     float* dst = history[histHead];
     if (!dst) return;
+    // store the combined (both-species) field; persistence + the Phase-2 memory
+    // echo operate on the combined intensity.
     for (int r = 0; r < STRIP_H; r++)
         for (int c = 0; c < WORLD_W; c++)
-            dst[r * WORLD_W + c] = strip.interiorGet(r, c);
+            dst[r * WORLD_W + c] = strip.interiorGet(0, r, c) + strip.interiorGet(1, r, c);
     histHead = (histHead + 1) % HIST_N;
     if (histCount < HIST_N) histCount++;
 }
@@ -177,13 +186,15 @@ static float computePersistence() {
 }
 
 static void buildTile() {
-    int k = 0;
-    for (int r = 0; r < STRIP_H; r += 2)
-        for (int c = 0; c < WORLD_W; c += 2) {
-            float u = strip.interiorGet(r, c);
-            int v = (int)(u * 255.0f + 0.5f);
-            tileBuf[k++] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
-        }
+    for (int ch = 0; ch < NCH; ch++) {
+        int k = ch * TILE_PLANE;
+        for (int r = 0; r < STRIP_H; r += 2)
+            for (int c = 0; c < WORLD_W; c += 2) {
+                float u = strip.interiorGet(ch, r, c);
+                int v = (int)(u * 255.0f + 0.5f);
+                tileBuf[k++] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            }
+    }
 }
 
 static void computeGeneration(bool fromMaster) {
@@ -196,6 +207,7 @@ static void computeGeneration(bool fromMaster) {
         strip.selfWrapHalos();   // free-run: single-chip torus
     }
     strip.step();
+    strip.blendPrevious(MEMORY_ECHO);   // Bank B "memory": persistent, trailing structures
     strip.extractTopHalo(haloTop);
     strip.extractBottomHalo(haloBottom);
     pushHistory();
@@ -209,17 +221,19 @@ static void computeGeneration(bool fromMaster) {
 
 // --------------------------------------------------------------------------
 static void dumpSerial() {
-    static const char ramp[] = " .:-=+*#%@";
-    Serial.printf("\n[S3 %02X] gen=%lu mass=%.3f act=%.3f ent=%.3f persist=%.3f fit=%.3f\n",
-                  MY_ADDR, (unsigned long)strip.generation(), stats.mass, stats.activity,
-                  stats.entropy, persistence, stats.fitness);
+    static const char rampP[] = " .:-=+*";   // prey (species 0)
+    static const char rampD[] = " oO0@#%";   // predator (species 1, wins ties)
+    Serial.printf("\n[S3 %02X] gen=%lu mass=%.3f sp1=%.3f act=%.3f ent=%.3f persist=%.3f fit=%.3f\n",
+                  MY_ADDR, (unsigned long)strip.generation(), stats.mass, stats.mass1,
+                  stats.activity, stats.entropy, persistence, stats.fitness);
     for (int r = 0; r < STRIP_H; r += 2) {
         char line[WORLD_W / 2 + 1];
         int k = 0;
         for (int c = 0; c < WORLD_W; c += 2) {
-            float u = strip.interiorGet(r, c);
-            int idx = (int)(u * 9.0f);
-            line[k++] = ramp[idx < 0 ? 0 : (idx > 9 ? 9 : idx)];
+            float p = strip.interiorGet(0, r, c);
+            float d = strip.interiorGet(1, r, c);
+            if (d >= p) { int i = (int)(d * 6.0f); line[k++] = rampD[i < 0 ? 0 : (i > 6 ? 6 : i)]; }
+            else        { int i = (int)(p * 6.0f); line[k++] = rampP[i < 0 ? 0 : (i > 6 ? 6 : i)]; }
         }
         line[k] = '\0';
         Serial.println(line);
@@ -234,12 +248,13 @@ void setup() {
     // Strip buffers: prefer PSRAM if present, else internal RAM (they fit).
     bool psram = psramFound();
     Serial.printf("PSRAM: %s\n", psram ? "present" : "absent (using internal RAM)");
-    float* bufA = psram ? (float*)heap_caps_malloc(TOTAL * sizeof(float), MALLOC_CAP_SPIRAM) : nullptr;
-    float* bufB = psram ? (float*)heap_caps_malloc(TOTAL * sizeof(float), MALLOC_CAP_SPIRAM) : nullptr;
-    if (!bufA) bufA = (float*)malloc(TOTAL * sizeof(float));
-    if (!bufB) bufB = (float*)malloc(TOTAL * sizeof(float));
+    const size_t bufBytes = (size_t)NCH * TOTAL * sizeof(float);   // both species
+    float* bufA = psram ? (float*)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM) : nullptr;
+    float* bufB = psram ? (float*)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM) : nullptr;
+    if (!bufA) bufA = (float*)malloc(bufBytes);
+    if (!bufB) bufB = (float*)malloc(bufBytes);
     strip.attach(bufA, bufB);
-    strip.setGenome(defaultGenome(BANK_B));
+    strip.setGenome(memoryGenome(BANK_B));   // Bank B = slow/persistent two-species ecology
     strip.seed(SEED_ORBIUM);
 
     // History ring (best-effort): PSRAM if present, else internal; null entries

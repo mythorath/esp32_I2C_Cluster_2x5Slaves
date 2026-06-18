@@ -28,6 +28,12 @@ class Lineage {
 public:
     static constexpr int CAP = 256;
 
+    // Durable sink (telemetry spool + Selis). Called for every recorded event so
+    // the durable T2 stream is exactly the fossil record, without touching every
+    // call site. Set after begin().
+    typedef void (*SinkFn)(const LineageEvent&, void*);
+    void setSink(SinkFn fn, void* ctx) { sink_ = fn; sinkCtx_ = ctx; }
+
     void begin() { head_ = 0; count_ = 0; total_ = 0; }
 
     void record(uint8_t type, uint32_t gen, int fromStrip, int toStrip,
@@ -35,6 +41,7 @@ public:
         LineageEvent& e = ring_[head_];
         e.gen = gen; e.type = type; e.fromStrip = (int8_t)fromStrip; e.toStrip = (int8_t)toStrip;
         e.lineageId = lineageId; e.organismId = organismId; e.fitness = fitness;
+        if (sink_) sink_(e, sinkCtx_);    // durable spool + Selis
         head_ = (head_ + 1) % CAP;
         if (count_ < CAP) count_++;
         total_++;
@@ -64,6 +71,8 @@ private:
     LineageEvent ring_[CAP];
     int head_ = 0, count_ = 0;
     uint32_t total_ = 0;
+    SinkFn sink_ = nullptr;
+    void* sinkCtx_ = nullptr;
 };
 
 }  // namespace chimera

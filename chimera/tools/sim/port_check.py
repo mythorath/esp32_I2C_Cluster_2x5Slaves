@@ -162,12 +162,82 @@ def check_fixed_point(steps: int = 220) -> bool:
     return ok
 
 
+# --------------------------------------------------------------------------
+# Check 4: 2-channel FIXED-POINT bank (mirrors the C3 multi-species firmware:
+# uint16 state per channel, self + cross growth LUTs, signed cross weights,
+# integer state update). Convolution equivalence to dense was proven in check
+# 1, so we use FFT conv but keep state/LUT/combine integer - the parts unique
+# to the fixed-point multi-channel port.
+# --------------------------------------------------------------------------
+def _fftk(K, h, w):
+    kf = np.zeros((h, w))
+    ks = K.shape[0]
+    cy, cx, r = h // 2, w // 2, ks // 2
+    kf[cy - r:cy + r + 1, cx - r:cx + r + 1] = K
+    return np.fft.fft2(np.fft.fftshift(kf))
+
+
+def check_multichannel_fixed(steps: int = 140) -> bool:
+    from multichannel_ref import INSTINCT
+    g = INSTINCT
+    IH, W = 96, 96   # validates the fixed-point math with the same room as the float ref
+    p_self = LeniaParams(R=g.R, mu=g.mu, sigma=g.sigma, mu_k=g.mu_k, sigma_k=g.sigma_k)
+    p_cross = LeniaParams(R=g.R, mu_k=g.mu_kc, sigma_k=g.sigma_kc)
+    fk_self = _fftk(make_kernel(p_self), IH, W)
+    fk_cross = _fftk(make_kernel(p_cross), IH, W)
+    # self growth LUT (2*bell-1) and cross presence-bump LUT (bell), both u16-delta
+    self_lut = np.array([round((1.0 / g.T) * (2 * float(bell(np.array(i / 1023.0), g.mu, g.sigma)) - 1) * 65535)
+                         for i in range(1024)], dtype=np.int64)
+    cross_lut = np.array([round((1.0 / g.T) * float(bell(np.array(i / 1023.0), g.mu_c, g.sigma_c)) * 65535)
+                          for i in range(1024)], dtype=np.int64)
+    w = (g.w_prey, g.w_pred)
+
+    def stamp(A, ch, top, left):
+        s = np.round(ORBIUM * 65535).astype(np.int64)
+        A[ch][top:top + 20, left:left + 20] = s
+
+    def run_fixed(coupled):
+        A = [np.zeros((IH, W), np.int64), np.zeros((IH, W), np.int64)]
+        stamp(A, 0, IH // 2 - 4, W // 2 - 4)
+        stamp(A, 1, IH // 2 + 4, W // 2 + 4)
+        for _ in range(steps):
+            out = [None, None]
+            for i in range(2):
+                af = A[i].astype(np.float64) / 65535.0
+                us = np.clip(np.real(np.fft.ifft2(np.fft.fft2(af) * fk_self)), 0, 1)
+                idx_s = np.clip((us * 1023).astype(np.int64), 0, 1023)
+                delta = self_lut[idx_s]
+                if coupled:
+                    of = A[1 - i].astype(np.float64) / 65535.0
+                    uc = np.clip(np.real(np.fft.ifft2(np.fft.fft2(of) * fk_cross)), 0, 1)
+                    idx_c = np.clip((uc * 1023).astype(np.int64), 0, 1023)
+                    delta = delta + (w[i] * cross_lut[idx_c]).astype(np.int64)
+                out[i] = np.clip(A[i] + delta, 0, 65535)
+            A = out
+        return A
+
+    coup = run_fixed(True)
+    unco = run_fixed(False)
+
+    def mass(a):
+        return float(a.sum() / 65535.0)
+    m0c, m1c = mass(coup[0]), mass(coup[1])
+    alive = 8.0 < m0c < 800 and 8.0 < m1c < 800
+    d0 = np.linalg.norm(unco[0].astype(float)) + 1e-6
+    change = float(np.linalg.norm((coup[0] - unco[0]).astype(float)) / d0)
+    ok = alive and change > 0.15
+    print(f"[4] 2-channel fixed-point: mass({m0c:.0f},{m1c:.0f}) alive={alive} "
+          f"coupling field-change={change*100:.0f}%  {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> None:
     print("=== Firmware algorithm port-check (numpy mirror of the C++ policies) ===")
     ok = True
     ok &= check_sparse_taps()
     ok &= check_quantized_halo_float()
     ok &= check_fixed_point()
+    ok &= check_multichannel_fixed()
     print(f"RESULT: {'PASS - firmware math choices preserve life' if ok else 'FAIL'}")
     raise SystemExit(0 if ok else 1)
 

@@ -24,7 +24,8 @@ struct Organism {
 struct WorldVitals {
     uint32_t generation = 0;
     int      online = 0;
-    float    worldMass = 0;       // mean strip mass
+    float    worldMass = 0;       // mean strip mass (both species)
+    float    worldMass1 = 0;      // mean species-1 (predator) mass (species split)
     float    worldActivity = 0;
     float    worldEntropy = 0;
     float    bestFitness = 0;
@@ -37,6 +38,19 @@ struct WorldVitals {
     bool     wifiOk = false;
     char     ip[20] = {0};        // master IP, or "headless"
     bool     nodeOnline[N_STRIPS] = {false};
+};
+
+// T2b durable vitals snapshot spooled to flash + sent to Selis (~every 30 s).
+// Compact scalar subset of WorldVitals. See docs/cluster-telemetry-and-persistence.md.
+struct __attribute__((packed)) VitalsSnap {
+    uint32_t gen;
+    float    mass, activity, entropy;
+    float    bestFitness;
+    int16_t  bestStrip;
+    float    coupling;
+    uint16_t organismsAlive;
+    uint32_t births, deaths, migrations, seamCrossings;
+    uint8_t  online;
 };
 
 }  // namespace chimera

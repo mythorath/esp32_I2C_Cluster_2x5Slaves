@@ -22,16 +22,24 @@ bool HaloRouter::collect(BusManager& bus) {
     return ok;
 }
 
-void HaloRouter::maybeDither(uint8_t* buf, bool isSeam) {
-    if (!dither_ || !isSeam) return;
-    // Tiny ordered-ish dither (+/-1 LSB) so a smooth float edge doesn't band
-    // when it lands in the quantized bank. Cheap LFSR-driven.
+// The seam between number-systems is a real transformation, not a copy:
+//  - into MEMORY (Bank B): IMPRINT - reinforce the incoming pattern so it tends
+//    to persist (memory "holds onto" what crosses in).
+//  - into INSTINCT (Bank A): ENERGIZE - decay + dither so the pattern arrives
+//    destabilized/reactive (instinct doesn't preserve, it reacts).
+// Applies uniformly across both species planes (HALO_BYTES).
+void HaloRouter::seamTransform(uint8_t* buf, bool isSeam, int toBank) {
+    if (!isSeam) return;
+    const float gain = (toBank == BANK_B) ? 1.15f : 0.88f;
+    const bool dither = dither_ && (toBank == BANK_A);
     for (int i = 0; i < HALO_BYTES; i++) {
-        ditherState_ ^= ditherState_ << 13;
-        ditherState_ ^= ditherState_ >> 17;
-        ditherState_ ^= ditherState_ << 5;
-        int d = (int)(ditherState_ & 1) - (int)((ditherState_ >> 1) & 1);  // -1,0,+1-ish
-        int v = (int)buf[i] + d;
+        int v = (int)(buf[i] * gain + 0.5f);
+        if (dither) {
+            ditherState_ ^= ditherState_ << 13;
+            ditherState_ ^= ditherState_ >> 17;
+            ditherState_ ^= ditherState_ << 5;
+            v += (int)(ditherState_ & 3) - 1;   // -1..+2 jitter -> reactivity
+        }
         buf[i] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
     }
 }
@@ -47,7 +55,7 @@ bool HaloRouter::route(BusManager& bus, HaloEvents* ev) {
         const uint8_t* topSrc = bus.online(above) ? haloBottom_[above] : haloBottom_[i];
         memcpy(recv_, topSrc, HALO_BYTES);
         bool seamTop = bus.online(above) && isSeamAbove(i);
-        maybeDither(recv_, seamTop);
+        seamTransform(recv_, seamTop, stripBank(i));
         ok &= bus.writeBuffer(i, CMD_RECV_HALO, 0, recv_, HALO_BYTES);
         if (ev) { ev->exchanges++; if (seamTop) ev->seamCrossings++; }
 
@@ -55,7 +63,7 @@ bool HaloRouter::route(BusManager& bus, HaloEvents* ev) {
         const uint8_t* botSrc = bus.online(below) ? haloTop_[below] : haloTop_[i];
         memcpy(recv_, botSrc, HALO_BYTES);
         bool seamBot = bus.online(below) && isSeamBelow(i);
-        maybeDither(recv_, seamBot);
+        seamTransform(recv_, seamBot, stripBank(i));
         ok &= bus.writeBuffer(i, CMD_RECV_HALO, 1, recv_, HALO_BYTES);
         if (ev) { ev->exchanges++; if (seamBot) ev->seamCrossings++; }
     }

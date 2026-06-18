@@ -17,7 +17,7 @@
 
 namespace chimera {
 
-void Narrator::begin(WebViz* web) {
+void Narrator::begin(TelemetryClient* web) {
     web_ = web;
     seed_ ^= millis();
 }

@@ -39,7 +39,9 @@ public:
     const uint8_t* bottomEdge(int strip) const { return haloBottom_[strip]; }
 
 private:
-    void maybeDither(uint8_t* buf, bool isSeam);
+    // Transform a halo crossing the A<->B seam: into MEMORY (Bank B) it is
+    // imprinted/reinforced; into INSTINCT (Bank A) it is energized + dithered.
+    void seamTransform(uint8_t* buf, bool isSeam, int toBank);
 
     // Heap-allocated (begin()) to avoid blowing the ESP32 static DRAM segment.
     uint8_t* haloTop_[N_STRIPS] = {nullptr};

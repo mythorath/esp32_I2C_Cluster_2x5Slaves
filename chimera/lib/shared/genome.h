@@ -20,11 +20,18 @@ struct __attribute__((packed)) Genome {
     uint8_t  bank;                    // 0 = A (C3/fixed), 1 = B (S3/float)
     uint8_t  _pad;
     float    T;                       // time resolution; dt = 1/T
-    float    mu;                      // growth center
-    float    sigma;                   // growth width
-    float    mu_k;                    // kernel shell center (fraction of R)
-    float    sigma_k;                 // kernel shell width
-    float    beta[GENOME_MAX_BETA];   // per-shell peak heights
+    float    mu;                      // growth center (self)
+    float    sigma;                   // growth width (self)
+    float    mu_k;                    // self kernel shell center (fraction of R)
+    float    sigma_k;                 // self kernel shell width
+    float    beta[GENOME_MAX_BETA];   // per-shell peak heights (self kernel)
+    // ----- cross-species interaction (multi-channel Lenia) -----
+    float    mu_kc;                   // cross sensing kernel center (0 = center-weighted disk)
+    float    sigma_kc;                // cross sensing kernel width
+    float    mu_c;                    // cross growth "presence" bump center
+    float    sigma_c;                 // cross growth bump width
+    float    w_prey;                  // species-0 growth weight from species-1 presence (<0 = suppressed)
+    float    w_pred;                  // species-1 growth weight from species-0 presence (>0 = fed)
     uint32_t lineage_id;             // root ancestor id (fossil record)
     uint16_t generation;             // genome generations since lineage root
     uint16_t _pad2;
@@ -33,6 +40,8 @@ struct __attribute__((packed)) Genome {
 static constexpr int GENOME_BYTES = sizeof(Genome);
 
 // Locked Orbium-class starting genome (validated in tools/sim/lenia_ref.py).
+// Cross-interaction zeroed by default (single-species fallback). Use
+// instinctGenome()/memoryGenome() for the two-species banks.
 inline Genome defaultGenome(uint8_t bank) {
     Genome g;
     memset(&g, 0, sizeof(g));
@@ -47,8 +56,33 @@ inline Genome defaultGenome(uint8_t bank) {
     g.beta[0] = 1.0f;
     g.beta[1] = 0.0f;
     g.beta[2] = 0.0f;
+    // self-organizing cross defaults (no coupling)
+    g.mu_kc = 0.0f;
+    g.sigma_kc = 0.30f;
+    g.mu_c = 0.20f;
+    g.sigma_c = 0.05f;
+    g.w_prey = 0.0f;
+    g.w_pred = 0.0f;
     g.lineage_id = 0;
     g.generation = 0;
+    return g;
+}
+
+// Two locked bank "personalities" (validated in tools/sim/multichannel_ref.py).
+// INSTINCT (Bank A / C3): fast dt, strong coupling -> twitchy, reactive chases.
+inline Genome instinctGenome(uint8_t bank) {
+    Genome g = defaultGenome(bank);
+    g.T = 6.0f;
+    g.w_prey = -0.26f;
+    g.w_pred = +0.32f;
+    return g;
+}
+// MEMORY (Bank B / S3): slow dt, gentle coupling -> calm, persistent drift.
+inline Genome memoryGenome(uint8_t bank) {
+    Genome g = defaultGenome(bank);
+    g.T = 14.0f;
+    g.w_prey = -0.12f;
+    g.w_pred = +0.15f;
     return g;
 }
 
@@ -67,6 +101,13 @@ inline void clampGenome(Genome& g) {
     for (int i = 0; i < GENOME_MAX_BETA; i++) g.beta[i] = clampf(g.beta[i], 0.0f, 1.0f);
     if (g.n_beta < 1) g.n_beta = 1;
     if (g.n_beta > GENOME_MAX_BETA) g.n_beta = GENOME_MAX_BETA;
+    // cross-interaction ranges (kept moderate so coupling perturbs, not kills)
+    g.mu_kc    = clampf(g.mu_kc, 0.0f, 0.85f);
+    g.sigma_kc = clampf(g.sigma_kc, 0.04f, 0.50f);
+    g.mu_c     = clampf(g.mu_c, 0.05f, 0.50f);
+    g.sigma_c  = clampf(g.sigma_c, 0.02f, 0.20f);
+    g.w_prey   = clampf(g.w_prey, -0.45f, 0.10f);
+    g.w_pred   = clampf(g.w_pred, -0.10f, 0.45f);
 }
 
 inline void serializeGenome(const Genome& g, uint8_t* out) {
@@ -105,6 +146,10 @@ inline void mutateGenome(Genome& g, Rng& rng, float rate, float floorRate = 0.01
     g.mu_k    += rng.normal() * 0.03f  * r;
     g.sigma_k += rng.normal() * 0.02f  * r;
     for (int i = 0; i < g.n_beta; i++) g.beta[i] += rng.normal() * 0.05f * r;
+    // mutate the interaction matrix too -> ecologies diverge between lineages
+    g.w_prey  += rng.normal() * 0.04f  * r;
+    g.w_pred  += rng.normal() * 0.04f  * r;
+    g.mu_c    += rng.normal() * 0.02f  * r;
     g.generation++;
     clampGenome(g);
 }

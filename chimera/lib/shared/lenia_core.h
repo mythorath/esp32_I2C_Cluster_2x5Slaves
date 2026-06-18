@@ -1,15 +1,19 @@
-// lenia_core.h - shared, Policy-templated Lenia strip engine.
+// lenia_core.h - shared, Policy-templated MULTI-CHANNEL Lenia strip engine.
 //
-// One node owns one horizontal strip (WORLD_W x STRIP_H) of the torus. The
-// buffer carries KERNEL_R halo rows above and below the interior so a single
-// naive convolution covers every interior cell; X wraps toroidally within the
-// strip (WORLD_W is a power of two -> mask wrap).
+// One node owns one horizontal strip (WORLD_W x STRIP_H) of the torus, carrying
+// NCH interacting species (channels). The buffer carries KERNEL_R halo rows
+// above and below the interior so a single naive convolution covers every
+// interior cell; X wraps toroidally within the strip (WORLD_W is a power of two
+// -> mask wrap).
+//
+// Per channel each generation: a SELF convolution (own kernel) drives the
+// standard Lenia growth, plus a CROSS convolution of the OTHER species through
+// a sensing kernel drives a signed "presence" growth term (predator fed by
+// prey, prey suppressed by predator). Validated in tools/sim/multichannel_ref.py
+// and port_check.py (check 4).
 //
 // All number-system specifics (uint16+LUT for Bank A, float32 for Bank B) live
-// in a Policy (see lenia_fixed.h / lenia_float.h). The Policy precomputes the
-// sparse nonzero kernel taps (the kernel is a thin annulus, so most of the
-// 27x27 window is zero) and supplies the accumulate + growth/clip steps. The
-// core handles geometry, halos, stats, seeding, and quantized halo I/O.
+// in a Policy (lenia_fixed.h / lenia_float.h).
 #pragma once
 
 #include <stdint.h>
@@ -47,9 +51,10 @@ static constexpr int   W      = WORLD_W;
 static constexpr int   WMASK  = WORLD_W - 1;       // requires WORLD_W power of two
 static constexpr int   HALO   = KERNEL_R;
 static constexpr int   IH     = STRIP_H;           // interior height
-static constexpr int   TOTAL  = BUF_H * WORLD_W;   // cells per buffer (with halos)
+static constexpr int   TOTAL  = BUF_H * WORLD_W;   // cells per channel buffer (with halos)
 static constexpr float ACT_EPS = 0.01f;            // activity threshold
 
+// A buffer holds NCH channels back-to-back: channel c starts at c*TOTAL.
 template <class Policy>
 class LeniaStrip {
 public:
@@ -57,7 +62,7 @@ public:
 
     LeniaStrip() : cur_(0), gen_(0) {}
 
-    // buf_[0]/buf_[1] must be provided by the node (heap or PSRAM) before use.
+    // bufA/bufB must each be NCH*TOTAL States (heap/PSRAM), provided by the node.
     void attach(State* bufA, State* bufB) {
         buf_[0] = bufA;
         buf_[1] = bufB;
@@ -71,82 +76,120 @@ public:
     const Genome& genome() const { return genome_; }
 
     void clear() {
-        for (int i = 0; i < TOTAL; i++) { buf_[0][i] = Policy::zero(); buf_[1][i] = Policy::zero(); }
+        for (int i = 0; i < NCH * TOTAL; i++) { buf_[0][i] = Policy::zero(); buf_[1][i] = Policy::zero(); }
     }
 
-    State* current() { return buf_[cur_]; }
-    State* next()    { return buf_[cur_ ^ 1]; }
+    inline State* chan(int b, int ch) { return buf_[b] + ch * TOTAL; }
+    inline const State* chan(int b, int ch) const { return buf_[b] + ch * TOTAL; }
 
-    // Index helpers (buffer coords: row 0..BUF_H-1, col 0..W-1).
     static inline int idx(int row, int col) { return row * W + col; }
-    // Interior cell (r in 0..IH-1, c in 0..W-1) maps to buffer row r+HALO.
-    inline State interiorGet(int r, int c) const { return buf_[cur_][idx(r + HALO, c)]; }
-    inline void  interiorSet(int r, int c, State v) { buf_[cur_][idx(r + HALO, c)] = v; }
+    inline State interiorGet(int ch, int r, int c) const { return chan(cur_, ch)[idx(r + HALO, c)]; }
+    inline void  interiorSet(int ch, int r, int c, State v) { chan(cur_, ch)[idx(r + HALO, c)] = v; }
 
-    // -------- halo I/O (uint8 quantized, HALO_ROWS x W) --------
-    // Master reads our top/bottom interior edges and hands them to neighbors.
-    void extractTopHalo(uint8_t* out) const {     // our top HALO interior rows
-        const State* b = buf_[cur_];
-        for (int r = 0; r < HALO; r++)
-            for (int c = 0; c < W; c++)
-                out[r * W + c] = unitToByte(Policy::toUnit(b[idx(r + HALO, c)]));
+    // -------- halo I/O: NCH planes stacked, [ch*HALO_PLANE + r*W + c] --------
+    void extractTopHalo(uint8_t* out) const {
+        for (int ch = 0; ch < NCH; ch++) {
+            const State* b = chan(cur_, ch);
+            uint8_t* o = out + ch * HALO_PLANE;
+            for (int r = 0; r < HALO; r++)
+                for (int c = 0; c < W; c++)
+                    o[r * W + c] = unitToByte(Policy::toUnit(b[idx(r + HALO, c)]));
+        }
     }
-    void extractBottomHalo(uint8_t* out) const {  // our bottom HALO interior rows
-        const State* b = buf_[cur_];
-        for (int r = 0; r < HALO; r++)
-            for (int c = 0; c < W; c++)
-                out[r * W + c] = unitToByte(Policy::toUnit(b[idx(HALO + IH - HALO + r, c)]));
+    void extractBottomHalo(uint8_t* out) const {
+        for (int ch = 0; ch < NCH; ch++) {
+            const State* b = chan(cur_, ch);
+            uint8_t* o = out + ch * HALO_PLANE;
+            for (int r = 0; r < HALO; r++)
+                for (int c = 0; c < W; c++)
+                    o[r * W + c] = unitToByte(Policy::toUnit(b[idx(HALO + IH - HALO + r, c)]));
+        }
     }
-    // Neighbor edges written into our halo regions before the next step.
-    void injectTopHalo(const uint8_t* in) {       // rows [0,HALO)
-        State* b = buf_[cur_];
-        for (int r = 0; r < HALO; r++)
-            for (int c = 0; c < W; c++)
-                b[idx(r, c)] = Policy::fromUnit(byteToUnit(in[r * W + c]));
+    void injectTopHalo(const uint8_t* in) {
+        for (int ch = 0; ch < NCH; ch++) {
+            State* b = chan(cur_, ch);
+            const uint8_t* i = in + ch * HALO_PLANE;
+            for (int r = 0; r < HALO; r++)
+                for (int c = 0; c < W; c++)
+                    b[idx(r, c)] = Policy::fromUnit(byteToUnit(i[r * W + c]));
+        }
     }
-    void injectBottomHalo(const uint8_t* in) {     // rows [HALO+IH, BUF_H)
-        State* b = buf_[cur_];
-        for (int r = 0; r < HALO; r++)
-            for (int c = 0; c < W; c++)
-                b[idx(HALO + IH + r, c)] = Policy::fromUnit(byteToUnit(in[r * W + c]));
+    void injectBottomHalo(const uint8_t* in) {
+        for (int ch = 0; ch < NCH; ch++) {
+            State* b = chan(cur_, ch);
+            const uint8_t* i = in + ch * HALO_PLANE;
+            for (int r = 0; r < HALO; r++)
+                for (int c = 0; c < W; c++)
+                    b[idx(HALO + IH + r, c)] = Policy::fromUnit(byteToUnit(i[r * W + c]));
+        }
     }
 
-    // Standalone/bench mode: make this single strip a full vertical torus by
-    // copying its own interior edges into its halo bands (no master needed).
+    // Standalone/bench: make each channel a full vertical torus (no master).
     void selfWrapHalos() {
-        State* b = buf_[cur_];
-        for (int r = 0; r < HALO; r++)
-            for (int c = 0; c < W; c++) {
-                b[idx(r, c)] = b[idx(HALO + IH - HALO + r, c)];        // top halo <- bottom edge
-                b[idx(HALO + IH + r, c)] = b[idx(HALO + r, c)];        // bottom halo <- top edge
-            }
+        for (int ch = 0; ch < NCH; ch++) {
+            State* b = chan(cur_, ch);
+            for (int r = 0; r < HALO; r++)
+                for (int c = 0; c < W; c++) {
+                    b[idx(r, c)] = b[idx(HALO + IH - HALO + r, c)];
+                    b[idx(HALO + IH + r, c)] = b[idx(HALO + r, c)];
+                }
+        }
     }
 
-    // -------- one generation --------
+    // -------- one generation (all channels) --------
     void step() {
-        const State* src = buf_[cur_];
-        State* dst = buf_[cur_ ^ 1];
-        const int nt = policy_.nTaps;
+        using Acc = typename Policy::Acc;
+        const int ns = policy_.nSelfTaps;
+        const int ncr = policy_.nCrossTaps;
         lastActivity_ = 0;
-        for (int r = HALO; r < HALO + IH; r++) {
-            const int rowBase = r * W;
-            for (int c = 0; c < W; c++) {
-                typename Policy::Acc acc = Policy::zeroAcc();
-                for (int t = 0; t < nt; t++) {
-                    const int rr = r + policy_.tapDy[t];
-                    const int cc = (c + policy_.tapDx[t]) & WMASK;
-                    acc = policy_.macc(acc, t, src[rr * W + cc]);
+        for (int ch = 0; ch < NCH; ch++) {
+            const State* self = chan(cur_, ch);
+            const State* other = chan(cur_, (ch + 1) % NCH);   // NCH=2: the other species
+            State* dst = chan(cur_ ^ 1, ch);
+            for (int r = HALO; r < HALO + IH; r++) {
+                const int rowBase = r * W;
+                for (int c = 0; c < W; c++) {
+                    Acc accSelf = Policy::zeroAcc();
+                    for (int t = 0; t < ns; t++) {
+                        const int rr = r + policy_.selfDy[t];
+                        const int cc = (c + policy_.selfDx[t]) & WMASK;
+                        accSelf = policy_.maccSelf(accSelf, t, self[rr * W + cc]);
+                    }
+                    Acc accCross = Policy::zeroAcc();
+                    for (int t = 0; t < ncr; t++) {
+                        const int rr = r + policy_.crossDy[t];
+                        const int cc = (c + policy_.crossDx[t]) & WMASK;
+                        accCross = policy_.maccCross(accCross, t, other[rr * W + cc]);
+                    }
+                    State before = self[rowBase + c];
+                    State after = policy_.apply(before, accSelf, accCross, ch);
+                    dst[rowBase + c] = after;
+                    if (fabsf(Policy::toUnit(after) - Policy::toUnit(before)) > ACT_EPS) lastActivity_++;
                 }
-                State before = src[rowBase + c];
-                State after = policy_.apply(before, acc);
-                dst[rowBase + c] = after;
-                if (fabsf(Policy::toUnit(after) - Policy::toUnit(before)) > ACT_EPS) lastActivity_++;
             }
         }
-        // Copy interior edges within dst's halo bands are NOT set here; the
-        // master re-injects neighbor halos each generation. Flip buffers.
         cur_ ^= 1;
         gen_++;
+    }
+
+    // Memory bank only: blend the just-replaced previous field back into the
+    // current one (temporal low-pass) so structures persist/ghost/trail. This is
+    // what makes Bank B "remember" and look calm/enduring vs the instinct bank's
+    // sharp, reactive organisms. Call right after step(). echo in [0,1).
+    void blendPrevious(float echo) {
+        if (echo <= 0.0f) return;
+        const float keep = 1.0f - echo;
+        for (int ch = 0; ch < NCH; ch++) {
+            State* curB = chan(cur_, ch);
+            const State* prevB = chan(cur_ ^ 1, ch);
+            for (int r = HALO; r < HALO + IH; r++) {
+                const int base = r * W;
+                for (int c = 0; c < W; c++) {
+                    float v = Policy::toUnit(curB[base + c]) * keep + Policy::toUnit(prevB[base + c]) * echo;
+                    curB[base + c] = Policy::fromUnit(v);
+                }
+            }
+        }
     }
 
     // -------- seeding --------
@@ -154,65 +197,72 @@ public:
         clear();
         switch (pattern) {
             case SEED_EMPTY: break;
-            case SEED_ORBIUM: stampOrbium(); break;
+            case SEED_ORBIUM:
+                // two species seeded overlapping so they interact from gen 0
+                stampOrbium(0, IH / 2 - 12, W / 2 - 4);
+                stampOrbium(1, IH / 2 - 4,  W / 2 + 4);
+                break;
             case SEED_NOISE: {
                 Rng rng(seedVal ? seedVal : 0xA11FE);
-                for (int r = 0; r < IH; r++)
-                    for (int c = 0; c < W; c++)
-                        interiorSet(r, c, Policy::fromUnit(rng.unit() * 0.6f));
+                for (int ch = 0; ch < NCH; ch++)
+                    for (int r = 0; r < IH; r++)
+                        for (int c = 0; c < W; c++)
+                            interiorSet(ch, r, c, Policy::fromUnit(rng.unit() * 0.6f));
                 break;
             }
             default: break;
         }
     }
 
-    void stampOrbium(int top = IH / 2 - 10, int left = W / 2 - 10) {
+    void stampOrbium(int ch, int top, int left) {
         for (int r = 0; r < 20; r++) {
             int rr = top + r;
             if (rr < 0 || rr >= IH) continue;
             for (int c = 0; c < 20; c++) {
                 int cc = (left + c) & WMASK;
-                interiorSet(rr, cc, Policy::fromUnit(ORBIUM[r][c]));
+                interiorSet(ch, rr, cc, Policy::fromUnit(ORBIUM[r][c]));
             }
         }
     }
 
-    // -------- stats (unit-normalized, bank-agnostic) --------
+    // -------- stats (combined over species + species-1 split) --------
     StripStats computeStats() const {
         StripStats s;
         s.status = ST_READY;
         s.bank = genome_.bank;
         s.gen_lo = (uint16_t)(gen_ & 0xFFFF);
-        double mass = 0.0, sy = 0.0, sx = 0.0;
+        double mass = 0.0, mass1 = 0.0, sy = 0.0, sx = 0.0;
         int hist[16] = {0};
-        const State* b = buf_[cur_];
-        for (int r = 0; r < IH; r++) {
-            for (int c = 0; c < W; c++) {
-                float u = Policy::toUnit(b[idx(r + HALO, c)]);
-                mass += u;
-                sy += u * r;
-                sx += u * c;
-                int bin = (int)(u * 15.999f);
-                if (bin < 0) bin = 0;
-                if (bin > 15) bin = 15;
-                hist[bin]++;
+        for (int ch = 0; ch < NCH; ch++) {
+            const State* b = chan(cur_, ch);
+            for (int r = 0; r < IH; r++) {
+                for (int c = 0; c < W; c++) {
+                    float u = Policy::toUnit(b[idx(r + HALO, c)]);
+                    mass += u;
+                    if (ch == 1) mass1 += u;
+                    sy += u * r;
+                    sx += u * c;
+                    int bin = (int)(u * 15.999f);
+                    if (bin < 0) bin = 0;
+                    if (bin > 15) bin = 15;
+                    hist[bin]++;
+                }
             }
         }
         int cells = IH * W;
         s.mass = (float)(mass / cells);
-        s.activity = (float)lastActivity_ / cells;
+        s.mass1 = (float)(mass1 / cells);
+        s.activity = (float)lastActivity_ / (cells * NCH);
         if (mass > 1e-6) { s.com_y = (float)(sy / mass); s.com_x = (float)(sx / mass); }
         else { s.com_y = NAN; s.com_x = NAN; }
-        // normalized spatial entropy
         double h = 0.0;
+        int htot = cells * NCH;
         for (int i = 0; i < 16; i++) {
             if (!hist[i]) continue;
-            double p = (double)hist[i] / cells;
+            double p = (double)hist[i] / htot;
             h -= p * log(p);
         }
         s.entropy = (float)(h / log(16.0));
-        // node-local base fitness: structure (organism-sized mass) + activity.
-        // Bank B augments this with PSRAM temporal persistence in node_s3.
         float occTarget = 0.12f;
         float structure = expf(-(((s.mass - occTarget) / 0.1f) * ((s.mass - occTarget) / 0.1f)) / 2.0f);
         s.fitness = 1.0f * structure + 0.5f * s.activity;

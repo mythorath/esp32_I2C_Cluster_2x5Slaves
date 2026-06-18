@@ -10,20 +10,20 @@
 #include <stdint.h>
 #include "world_state.h"
 #include "detect.h"
-#include "webserver.h"
+#include "telemetry.h"
 
 namespace chimera {
 
 class Narrator {
 public:
-    void begin(WebViz* web);
+    void begin(TelemetryClient* web);
     void update(const WorldVitals& v, const Detector& detector, uint32_t gen);
 
 private:
     void compose(char* out, int cap, const WorldVitals& v, const Detector& detector);
     void post(const char* text);
 
-    WebViz* web_ = nullptr;
+    TelemetryClient* web_ = nullptr;
     uint32_t lastWebGen_ = 0;
     uint32_t lastPostMs_ = 0;
     uint32_t seed_ = 0xBADC0DE;

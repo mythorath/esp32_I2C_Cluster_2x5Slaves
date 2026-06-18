@@ -60,7 +60,7 @@ int Detector::labelComponents(const uint8_t* f, int w, int h) {
 }
 
 void Detector::update(const Stitch& stitch, uint32_t gen, WorldVitals& vitals,
-                      Lineage* lineage, LedEvents* leds, WebViz* web) {
+                      Lineage* lineage, LedEvents* leds, TelemetryClient* web) {
     if (!labels_ || !stack_) return;   // begin() not called or alloc failed
     int nComp = labelComponents(stitch.field(), stitch.width(), stitch.height());
 

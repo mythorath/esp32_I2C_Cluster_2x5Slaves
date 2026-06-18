@@ -100,8 +100,12 @@ void Evolution::islandStep(BusManager& bus, const StripStats* stats, Genome* gen
         int src = aStronger ? bestA : bestB;
         int dst = aStronger ? wB : wA;
         uint8_t dstBank = stripBank(dst);
-        genomes[dst] = genomes[src];          // transcode is native (bank-tagged)
+        genomes[dst] = genomes[src];          // carry the evolved interaction genes across
         genomes[dst].bank = dstBank;
+        // Seam transform (mirrors halo_router): a migrant adopts the destination
+        // bank's metabolism - fast/volatile in instinct, slow/persistent in memory -
+        // while keeping its evolved species-interaction matrix.
+        genomes[dst].T = (dstBank == BANK_A) ? 6.0f : 14.0f;
         mutateGenome(genomes[dst], rng_, (dstBank == BANK_A) ? RATE_A : RATE_B);
         if (bus.online(dst)) { bus.setGenome(dst, genomes[dst]); bus.seed(dst, SEED_ORBIUM, 0); }
         vitals.migrations++;

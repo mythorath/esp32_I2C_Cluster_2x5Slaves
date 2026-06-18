@@ -19,7 +19,7 @@
 #include "halo_router.h"
 #include "stitch.h"
 #include "display.h"
-#include "webserver.h"
+#include "telemetry.h"
 #include "world_state.h"
 #include "evolution.h"
 #include "detect.h"
@@ -42,7 +42,7 @@ static BusManager bus;
 static HaloRouter router;
 static Stitch stitch;
 static Display display;
-static WebViz web;
+static TelemetryClient web;   // outbound client to Selis (kept name `web` for call sites)
 static Evolution evolution;
 static Detector detector;
 static Lineage lineage;
@@ -63,9 +63,11 @@ static const uint32_t BRINGUP_MS = 20000;     // patient power-on join window
 
 static bool seeded[N_STRIPS] = {false};
 
-// Assign a strip's genome + initial pattern once it's present.
+// Assign a strip's genome + initial pattern once it's present. Bank A strips
+// get the volatile two-species "instinct" genome, Bank B the persistent
+// "memory" genome - this is what makes the two halves behave differently.
 static void seedNode(int i) {
-    genomes[i] = defaultGenome(stripBank(i));
+    genomes[i] = (stripBank(i) == BANK_A) ? instinctGenome(BANK_A) : memoryGenome(BANK_B);
     genomes[i].lineage_id = i;
     bus.setGenome(i, genomes[i]);
     bus.seed(i, (i == 0 || i == NODES_PER_BANK) ? SEED_ORBIUM : SEED_NOISE, 0xC0DE + i);
@@ -119,19 +121,21 @@ static void bringUp(uint32_t windowMs) {
 }
 
 static void gatherVitals() {
-    float massSum = 0, entSum = 0, actSum = 0, bestFit = -1;
+    float massSum = 0, mass1Sum = 0, entSum = 0, actSum = 0, bestFit = -1;
     int alive = 0, bestStrip = -1;
     for (int i = 0; i < N_STRIPS; i++) {
         vitals.nodeOnline[i] = bus.online(i);
         if (!bus.online(i)) continue;
         if (!bus.readStats(i, stats[i])) continue;
-        massSum += stats[i].mass; entSum += stats[i].entropy; actSum += stats[i].activity;
+        massSum += stats[i].mass; mass1Sum += stats[i].mass1;
+        entSum += stats[i].entropy; actSum += stats[i].activity;
         alive++;
         if (stats[i].fitness > bestFit) { bestFit = stats[i].fitness; bestStrip = i; }
     }
     vitals.generation = generation;
     vitals.online = bus.onlineCount();
     vitals.worldMass = alive ? massSum / alive : 0;
+    vitals.worldMass1 = alive ? mass1Sum / alive : 0;
     vitals.worldEntropy = alive ? entSum / alive : 0;
     vitals.worldActivity = alive ? actSum / alive : 0;
     vitals.bestFitness = bestFit < 0 ? 0 : bestFit;
@@ -160,22 +164,19 @@ void setup() {
 
     bringUp(BRINGUP_MS);   // patient join window + seed each node as it appears
 
-    if (HAVE_SECRETS) {
-        display.boot("wifi...");
-        if (web.begin(WIFI_SSID, WIFI_PASSWORD)) {
-            web.attach(&vitals, stats);
-            narrator.begin(&web);
-            Serial.printf("web viz: http://%s/\n", web.ip());
-        } else {
-            Serial.println("WiFi failed - running headless");
-        }
-    } else {
-        Serial.println("no secrets.h - web viz disabled (copy secrets.example.h)");
-    }
+    // Telemetry/persistence always comes up (the durable spool records even
+    // headless); WiFi/Selis is an optional sink. Never a dependency of the loop.
+    display.boot("link...");
+    bool linked = web.begin(WIFI_SSID, WIFI_PASSWORD);
+    web.attach(&vitals, stats);
+    web.registerSink(lineage);     // fossil events -> durable spool + Selis
+    narrator.begin(&web);
+    if (linked) Serial.printf("WiFi OK (%s) -> dialing Selis\n", web.ip());
+    else        Serial.println("no WiFi - running headless (spooling to flash)");
 
     // record network + node status for the display
-    vitals.wifiOk = web.connected();
-    strncpy(vitals.ip, vitals.wifiOk ? web.ip() : "headless", sizeof(vitals.ip) - 1);
+    vitals.wifiOk = linked;
+    strncpy(vitals.ip, linked ? web.ip() : "headless", sizeof(vitals.ip) - 1);
     for (int i = 0; i < N_STRIPS; i++) vitals.nodeOnline[i] = bus.online(i);
 
     // show the inventory immediately, before the first generation
