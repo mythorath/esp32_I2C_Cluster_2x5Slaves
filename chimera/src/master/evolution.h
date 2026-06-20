@@ -26,6 +26,10 @@ public:
     void update(BusManager& bus, const StripStats* stats, Genome* genomes,
                 WorldVitals& vitals, uint32_t gen, LedEvents* leds, Lineage* lineage);
 
+    // Re-arm all cadences to t=0 (used by a full environment reset so homeostasis
+    // and the island GA restart cleanly with the reseeded world).
+    void reset() { lastHomeo_ = 0; lastIsland_ = 0; lastMigrate_ = 0; }
+
 private:
     void homeostasis(BusManager& bus, Genome* genomes, const WorldVitals& v, uint32_t gen);
     void islandStep(BusManager& bus, const StripStats* stats, Genome* genomes,
@@ -35,10 +39,12 @@ private:
     Rng rng_{0x9E3779B9u};
     uint32_t lastHomeo_ = 0, lastIsland_ = 0, lastMigrate_ = 0;
 
-    // cadences (generations)
-    static constexpr uint32_t HOMEO_EVERY = 20;
-    static constexpr uint32_t ISLAND_EVERY = 180;
-    static constexpr uint32_t MIGRATE_EVERY = 360;
+    // cadences (generations). At ~10 s/gen on the 200 kHz bus these wall-clock to
+    // homeostasis ~2 min, island competition ~6 min, seam migration ~12 min - slow
+    // enough to be meaningful, fast enough that the dashboard actually shows them.
+    static constexpr uint32_t HOMEO_EVERY = 12;
+    static constexpr uint32_t ISLAND_EVERY = 36;
+    static constexpr uint32_t MIGRATE_EVERY = 72;
 
     // homeostasis target bands + gains. NOTE: a moving glider is a low-mass but
     // HIGH-activity world - it's interesting, not dying - so "dying" is gated on

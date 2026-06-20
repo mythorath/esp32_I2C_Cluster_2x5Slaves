@@ -33,6 +33,7 @@ public:
     void replaySince(uint32_t sinceSeq, ReplayCb cb, void* ctx);
     void ackUpTo(uint32_t seq);                  // advance + delete fully-acked segments
     void maybeEvict(size_t minFreeBytes);        // evictable streams only
+    void clear();                                // wipe all segments + state (env reset)
 
 private:
     void  saveState();

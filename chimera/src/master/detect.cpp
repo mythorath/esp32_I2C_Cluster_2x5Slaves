@@ -12,8 +12,17 @@ static const char* GENUS_B[] = {"Lumi", "Nimb", "Vela", "Aura", "Sela", "Mira", 
 static const char* SPECIES[] = {"ium", "ata", "ova", "ix", "or", "yx", "ula", "een"};
 
 void Detector::begin() {
-    labels_ = (int16_t*)malloc(DS_W * DS_H * sizeof(int16_t));
-    stack_ = (int16_t*)malloc(DS_W * DS_H * sizeof(int16_t));
+    labels_ = (uint8_t*)malloc(DS_W * DS_H);              // 1 byte/cell visited mask
+    stack_ = (int16_t*)malloc(STACK_CAP * sizeof(int16_t)); // bounded flood-fill frontier
+    Serial.printf("[detect] begin labels=%p stack=%p freeHeap=%u largestBlock=%u\n",
+                  (void*)labels_, (void*)stack_,
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+}
+
+void Detector::reset() {
+    for (int i = 0; i < MAX_ORGANISMS; i++) orgs_[i] = Organism();
+    nextId_ = 1;
+    newestIdx_ = -1;
 }
 
 void Detector::nameOrganism(Organism& o) {
@@ -25,14 +34,14 @@ void Detector::nameOrganism(Organism& o) {
 }
 
 int Detector::labelComponents(const uint8_t* f, int w, int h) {
-    for (int i = 0; i < w * h; i++) labels_[i] = -1;
+    for (int i = 0; i < w * h; i++) labels_[i] = 0;   // 0 = unvisited
     int nComp = 0;
     for (int start = 0; start < w * h; start++) {
-        if (f[start] < THRESH || labels_[start] != -1) continue;
+        if (f[start] < THRESH || labels_[start]) continue;
         // flood fill this component (4-connectivity, non-toroidal v1)
         int sp = 0;
         stack_[sp++] = start;
-        labels_[start] = nComp;
+        labels_[start] = 1;
         double mass = 0, sx = 0, sy = 0;
         int area = 0;
         while (sp > 0) {
@@ -45,7 +54,9 @@ int Detector::labelComponents(const uint8_t* f, int w, int h) {
             for (int k = 0; k < 4; k++) {
                 if (!ok[k]) continue;
                 int q = nb[k];
-                if (f[q] >= THRESH && labels_[q] == -1) { labels_[q] = nComp; stack_[sp++] = q; }
+                // Mark visited regardless so a full stack can't re-seed the same
+                // region as a phantom component; only expand if the stack has room.
+                if (f[q] >= THRESH && !labels_[q]) { labels_[q] = 1; if (sp < STACK_CAP) stack_[sp++] = q; }
             }
         }
         if (area >= MIN_AREA && area <= MAX_AREA && nComp < MAX_ORGANISMS) {
@@ -88,15 +99,34 @@ void Detector::update(const Stitch& stitch, uint32_t gen, WorldVitals& vitals,
             orgs_[oi].fitness = comps_[best].mass * (1.0f + sqrtf(orgs_[oi].vx * orgs_[oi].vx +
                                                                   orgs_[oi].vy * orgs_[oi].vy));
             miss[oi] = 0;
+            // Birth confirmation: a tracked structure only becomes a real, named
+            // organism (and fires a fossil/LED/ticker event) once it has persisted
+            // BIRTH_CONFIRM frames. Turbulent flicker never reaches this, so the
+            // event stream stays a trickle instead of a per-frame storm.
+            if (!orgs_[oi].announced && ++orgs_[oi].age >= BIRTH_CONFIRM) {
+                orgs_[oi].announced = true;
+                orgs_[oi].birthGen = gen;
+                int strip = Stitch::stripOfRow((int)orgs_[oi].y);
+                vitals.births++;
+                if (lineage) lineage->record(LIN_BIRTH, gen, strip, strip, orgs_[oi].id,
+                                             orgs_[oi].id, orgs_[oi].fitness);
+                if (leds) leds->onBirth(orgs_[oi].bank, orgs_[oi].x, orgs_[oi].y);
+                if (web) { char m[48]; snprintf(m, sizeof m, "%s born in Bank %c",
+                                                orgs_[oi].name, orgs_[oi].bank == BANK_A ? 'A' : 'B');
+                           web->pushEvent("birth", m); }
+            }
         } else {
             if (++miss[oi] > GRACE) {
                 orgs_[oi].alive = false;
-                orgs_[oi].deathGen = gen;
-                vitals.deaths++;
-                if (lineage) lineage->record(LIN_DEATH, gen, -1, -1, 0, orgs_[oi].id, orgs_[oi].fitness);
-                if (leds) leds->onDeath(orgs_[oi].bank);
-                if (web) { char m[40]; snprintf(m, sizeof m, "%s vanished", orgs_[oi].name);
-                           web->pushEvent("death", m); }
+                // Only announce a death for an organism the world ever heard about.
+                if (orgs_[oi].announced) {
+                    orgs_[oi].deathGen = gen;
+                    vitals.deaths++;
+                    if (lineage) lineage->record(LIN_DEATH, gen, -1, -1, 0, orgs_[oi].id, orgs_[oi].fitness);
+                    if (leds) leds->onDeath(orgs_[oi].bank);
+                    if (web) { char m[40]; snprintf(m, sizeof m, "%s vanished", orgs_[oi].name);
+                               web->pushEvent("death", m); }
+                }
             }
         }
     }
@@ -112,6 +142,8 @@ void Detector::update(const Stitch& stitch, uint32_t gen, WorldVitals& vitals,
         int strip = Stitch::stripOfRow((int)comps_[ci].y);
         o.bank = (strip < NODES_PER_BANK) ? BANK_A : BANK_B;
         o.alive = true;
+        o.announced = false;   // provisional - must survive BIRTH_CONFIRM frames
+        o.age = 1;
         o.birthGen = gen;
         o.deathGen = 0;
         o.x = comps_[ci].x; o.y = comps_[ci].y; o.vx = o.vy = 0;
@@ -119,18 +151,15 @@ void Detector::update(const Stitch& stitch, uint32_t gen, WorldVitals& vitals,
         nameOrganism(o);
         miss[slot] = 0;
         newestIdx_ = slot;
-        vitals.births++;
-        if (lineage) lineage->record(LIN_BIRTH, gen, strip, strip, o.id, o.id, o.fitness);
-        if (leds) leds->onBirth(o.bank, o.x, o.y);
-        if (web) { char m[48]; snprintf(m, sizeof m, "%s born in Bank %c",
-                                        o.name, o.bank == BANK_A ? 'A' : 'B');
-                   web->pushEvent("birth", m); }
+        // No birth event yet - that fires in the match path once it's confirmed.
     }
 }
 
 int Detector::aliveCount() const {
+    // Report only confirmed organisms so the dashboard count reflects real,
+    // persistent structures rather than transient flicker.
     int n = 0;
-    for (int i = 0; i < MAX_ORGANISMS; i++) if (orgs_[i].alive) n++;
+    for (int i = 0; i < MAX_ORGANISMS; i++) if (orgs_[i].alive && orgs_[i].announced) n++;
     return n;
 }
 
@@ -138,7 +167,9 @@ const Organism* Detector::newest() const {
     const Organism* best = nullptr;
     uint32_t bg = 0;
     for (int i = 0; i < MAX_ORGANISMS; i++)
-        if (orgs_[i].alive && orgs_[i].birthGen >= bg) { bg = orgs_[i].birthGen; best = &orgs_[i]; }
+        if (orgs_[i].alive && orgs_[i].announced && orgs_[i].birthGen >= bg) {
+            bg = orgs_[i].birthGen; best = &orgs_[i];
+        }
     return best;
 }
 

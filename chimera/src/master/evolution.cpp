@@ -70,11 +70,14 @@ void Evolution::islandStep(BusManager& bus, const StripStats* stats, Genome* gen
         float rate = (bank == BANK_A) ? RATE_A : RATE_B;
 
         if (rng_.unit() < WILDCARD_P) {
-            // wildcard: mutated bank personality + Orbium (keeps prey/predator chase alive)
+            // wildcard: mutated bank personality reseeded with fresh primordial soup.
+            // Half the time use NOISE (architecture sec 5b/11 - breaks dead-end
+            // attractors), half Orbium (guarantees a glider so life persists).
             genomes[worst] = (bank == BANK_A) ? instinctGenome(BANK_A) : memoryGenome(BANK_B);
             genomes[worst].lineage_id = 1000 + gen % 1000;
             mutateGenome(genomes[worst], rng_, rate * 1.5f);
-            if (bus.online(worst)) { bus.setGenome(worst, genomes[worst]); bus.seed(worst, SEED_ORBIUM, esp_random()); }
+            uint8_t pat = (rng_.unit() < 0.5f) ? SEED_NOISE : SEED_ORBIUM;
+            if (bus.online(worst)) { bus.setGenome(worst, genomes[worst]); bus.seed(worst, pat, esp_random()); }
             if (lineage) lineage->record(LIN_WILDCARD, gen, -1, worst, genomes[worst].lineage_id, 0, stats[worst].fitness);
         } else {
             genomes[worst] = genomes[best];                 // colonize

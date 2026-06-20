@@ -29,6 +29,12 @@ public:
     void begin();   // allocate halo buffers on the heap (keeps static DRAM small)
     void setDither(bool on) { dither_ = on; }
 
+    // Inter-hemisphere coupling [0,1]: scales how strongly a pattern crossing the
+    // A<->B seam influences the destination bank. The master "breathes" this over
+    // time (1 = fully integrated world, low = the two halves evolve independently).
+    void setCoupling(float c) { coupling_ = c < 0 ? 0 : (c > 1 ? 1 : c); }
+    float coupling() const { return coupling_; }
+
     // Read all online nodes' staged edges into haloTop_/haloBottom_.
     bool collect(BusManager& bus);
 
@@ -48,6 +54,7 @@ private:
     uint8_t* haloBottom_[N_STRIPS] = {nullptr};
     uint8_t recv_[HALO_BYTES];
     bool dither_ = true;
+    float coupling_ = 1.0f;
     uint32_t ditherState_ = 0x1234567u;
 };
 

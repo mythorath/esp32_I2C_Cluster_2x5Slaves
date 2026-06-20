@@ -190,9 +190,10 @@ void setup() {
     pinMode(PIN_ATTN, INPUT_PULLDOWN);
 
     Wire.setBufferSize(WIRE_BUFFER);
-    // Pass the bus frequency (100kHz) like the proven mining slave did. A 0 here
-    // can leave the C3 I2C-slave timing unconfigured so it never ACKs the master.
-    Wire.begin(MY_ADDR, PIN_SDA, PIN_SCL, (uint32_t)100000);
+    // Pass the bus frequency like the proven mining slave did. A 0 here can leave
+    // the C3 I2C-slave timing unconfigured so it never ACKs the master. I2C_HZ is
+    // the shared master/node bus clock (protocol.h).
+    Wire.begin(MY_ADDR, PIN_SDA, PIN_SCL, I2C_HZ);
     Wire.onReceive(onReceive);
     Wire.onRequest(onRequest);
 

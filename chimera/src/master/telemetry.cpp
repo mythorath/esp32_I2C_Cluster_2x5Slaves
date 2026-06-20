@@ -56,6 +56,9 @@ static void formatEventText(const LineageEvent& e, char* out, size_t cap) {
         case LIN_MUTATE:
             snprintf(out, cap, "mutation on strip %d", (int)e.toStrip);
             break;
+        case LIN_RESET:
+            snprintf(out, cap, "environment reset - world reseeded");
+            break;
         default:
             snprintf(out, cap, "%s %d->%d", Lineage::typeName(e.type), (int)e.fromStrip, (int)e.toStrip);
             break;
@@ -135,7 +138,7 @@ static void sendHello() {
 }
 
 static void onWsText(uint8_t* payload, size_t len) {
-    StaticJsonDocument<256> d;
+    StaticJsonDocument<384> d;
     if (deserializeJson(d, payload, len)) return;
     const char* t = d["t"] | "";
     if (strcmp(t, "hello") == 0) {
@@ -147,6 +150,15 @@ static void onWsText(uint8_t* payload, size_t len) {
     } else if (strcmp(t, "ack") == 0) {
         g_self->events().ackUpTo(d["ev"] | 0);
         g_self->vitals().ackUpTo(d["vit"] | 0);
+    } else if (strcmp(t, "cmd") == 0) {
+        // Operator command channel (docs/cluster-telemetry-and-persistence.md sec 4.2).
+        // The handler only queues a request; the master runs it off the hot I2C path.
+        const char* name = d["name"] | "";
+        const char* pattern = d["args"]["pattern"] | "orbium";
+        bool clearHistory = d["args"]["clear_history"] | false;
+        Serial.printf("[telemetry] cmd '%s' pattern=%s clearHistory=%d\n",
+                      name, pattern, clearHistory);
+        g_self->dispatchCommand(name, pattern, clearHistory);
     }
 }
 
@@ -229,12 +241,24 @@ bool TelemetryClient::connectWifi(uint32_t waitMs) {
 
 void TelemetryClient::maintainWifi() {
     if (wifiOk_) {
+        // ESP32 STA briefly reports WL_DISCONNECTED during beacon misses / DTIM
+        // wakeups even on a healthy link. Tearing the WS down on the first miss
+        // caused the dashboard to flap "cluster offline". Only declare a real
+        // drop after the link has been down continuously for a grace window;
+        // auto-reconnect usually restores it well before that.
         if (WiFi.status() != WL_CONNECTED) {
-            wifiOk_ = false;
-            ip_[0] = '\0';
-            wsStarted_ = false;
-            ws.disconnect();
-            Serial.println("WiFi dropped");
+            uint32_t now = millis();
+            if (wifiDownSinceMs_ == 0) wifiDownSinceMs_ = now;
+            if (now - wifiDownSinceMs_ > WIFI_DROP_GRACE_MS) {
+                wifiOk_ = false;
+                ip_[0] = '\0';
+                wsStarted_ = false;
+                wifiDownSinceMs_ = 0;
+                ws.disconnect();
+                Serial.println("WiFi dropped");
+            }
+        } else {
+            wifiDownSinceMs_ = 0;
         }
         return;
     }

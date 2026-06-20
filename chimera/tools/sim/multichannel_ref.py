@@ -58,9 +58,10 @@ class MultiGenome:
     w_pred: float = +0.22   # prey feed predators
 
 
-# Locked bank presets (feeds firmware instinctGenome()/memoryGenome()).
-INSTINCT = MultiGenome(T=6.0,  w_prey=-0.26, w_pred=+0.32)   # fast, reactive
-MEMORY   = MultiGenome(T=14.0, w_prey=-0.12, w_pred=+0.15)   # slow, persistent
+# Locked bank presets. Kept in sync with lib/shared/genome.h
+# (instinctGenome / memoryGenome) - these are the authoritative live values.
+INSTINCT = MultiGenome(T=5.5,  w_prey=-0.30, w_pred=+0.36)   # fast, reactive
+MEMORY   = MultiGenome(T=10.0, w_prey=-0.18, w_pred=+0.22)   # calmer, persistent
 
 
 def _fft_kernel(K: np.ndarray, h: int, w: int) -> np.ndarray:

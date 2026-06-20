@@ -192,16 +192,79 @@ public:
         }
     }
 
+    // Memory-bank fused post-step (NCH==2). Does, in ONE interior walk, what the
+    // S3 node previously spent three passes on: blendPrevious(echo) + computeStats()
+    // + writing the combined (both-species) interior field for the history ring.
+    // `combinedOut` may be null (history allocation failed) - then only blend+stats
+    // run. Float bank only; equivalent results to the separate calls.
+    StripStats blendAndDigest(float echo, float* combinedOut) {
+        StripStats s;
+        s.status = ST_READY;
+        s.bank = genome_.bank;
+        s.gen_lo = (uint16_t)(gen_ & 0xFFFF);
+        const float keep = 1.0f - echo;
+        const bool doBlend = echo > 0.0f;
+        State* c0 = chan(cur_, 0);
+        State* c1 = chan(cur_, 1);
+        const State* p0 = chan(cur_ ^ 1, 0);
+        const State* p1 = chan(cur_ ^ 1, 1);
+        double mass = 0.0, mass1 = 0.0, sy = 0.0, sx = 0.0;
+        int hist[16] = {0};
+        for (int r = 0; r < IH; r++) {
+            const int base = (r + HALO) * W;
+            float* co = combinedOut ? combinedOut + r * W : nullptr;
+            for (int c = 0; c < W; c++) {
+                float u0 = Policy::toUnit(c0[base + c]);
+                float u1 = Policy::toUnit(c1[base + c]);
+                if (doBlend) {
+                    u0 = u0 * keep + Policy::toUnit(p0[base + c]) * echo;
+                    u1 = u1 * keep + Policy::toUnit(p1[base + c]) * echo;
+                    c0[base + c] = Policy::fromUnit(u0);
+                    c1[base + c] = Policy::fromUnit(u1);
+                }
+                float comb = u0 + u1;
+                if (co) co[c] = comb;
+                mass += comb; mass1 += u1;
+                sy += comb * r; sx += comb * c;
+                int b0 = (int)(u0 * 15.999f); if (b0 < 0) b0 = 0; else if (b0 > 15) b0 = 15; hist[b0]++;
+                int b1 = (int)(u1 * 15.999f); if (b1 < 0) b1 = 0; else if (b1 > 15) b1 = 15; hist[b1]++;
+            }
+        }
+        int cells = IH * W;
+        s.mass = (float)(mass / cells);
+        s.mass1 = (float)(mass1 / cells);
+        s.activity = (float)lastActivity_ / (cells * NCH);
+        if (mass > 1e-6) { s.com_y = (float)(sy / mass); s.com_x = (float)(sx / mass); }
+        else { s.com_y = NAN; s.com_x = NAN; }
+        double h = 0.0;
+        int htot = cells * NCH;
+        for (int i = 0; i < 16; i++) {
+            if (!hist[i]) continue;
+            double pbin = (double)hist[i] / htot;
+            h -= pbin * log(pbin);
+        }
+        s.entropy = (float)(h / log(16.0));
+        float occTarget = 0.12f;
+        float structure = expf(-(((s.mass - occTarget) / 0.1f) * ((s.mass - occTarget) / 0.1f)) / 2.0f);
+        s.fitness = 1.0f * structure + 0.5f * s.activity;
+        return s;
+    }
+
     // -------- seeding --------
     void seed(uint8_t pattern, uint32_t seedVal = 0) {
         clear();
         switch (pattern) {
             case SEED_EMPTY: break;
-            case SEED_ORBIUM:
-                // two species seeded overlapping so they interact from gen 0
-                stampOrbium(0, IH / 2 - 12, W / 2 - 4);
-                stampOrbium(1, IH / 2 - 4,  W / 2 + 4);
+            case SEED_ORBIUM: {
+                // two species seeded overlapping so they interact from gen 0.
+                // seedVal staggers the horizontal encounter PHASE (column axis is
+                // toroidal) so chases across the cluster don't all start in lockstep;
+                // 0 keeps the legacy centered placement.
+                int dx = (int)(seedVal % (uint32_t)W);
+                stampOrbium(0, IH / 2 - 12, W / 2 - 4 + dx);
+                stampOrbium(1, IH / 2 - 4,  W / 2 + 4 + dx);
                 break;
+            }
             case SEED_NOISE: {
                 Rng rng(seedVal ? seedVal : 0xA11FE);
                 for (int ch = 0; ch < NCH; ch++)

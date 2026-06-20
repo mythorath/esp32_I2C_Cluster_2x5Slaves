@@ -13,6 +13,8 @@ struct Organism {
     char     name[16] = {0};
     uint8_t  bank = 0;            // origin bank
     bool     alive = false;
+    bool     announced = false;   // survived BIRTH_CONFIRM frames -> emit birth/death
+    uint16_t age = 0;             // consecutive frames tracked (for confirmation)
     uint32_t birthGen = 0;
     uint32_t deathGen = 0;
     float    x = 0, y = 0;        // stitched (downsampled) coords

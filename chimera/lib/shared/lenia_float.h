@@ -29,6 +29,15 @@ public:
     int8_t crossDy[MAX_TAPS], crossDx[MAX_TAPS];
     float  selfW[MAX_TAPS], crossW[MAX_TAPS];
 
+    // Growth LUT: the kernel weights are normalized (sum=1) and state is in
+    // [0,1], so both convolution accumulators land in [0,1]. We sample the two
+    // bell-based growth terms into LUT_N bins at configure time and look them up
+    // per cell, removing the two per-cell expf() calls that dominated the FPU
+    // path. Mirrors the fixed bank (lenia_fixed.h); validated by port_check.py
+    // check 5. selfLUT_ folds in 1/T so apply() is FMA + clamp only.
+    static constexpr int   LUT_N = 1024;
+    static constexpr float LUT_SCALE = (float)(LUT_N - 1);
+
     void configure(const Genome& g) {
         mu_ = g.mu; sigma_ = g.sigma; invT_ = 1.0f / g.T;
         mu_c_ = g.mu_c; sigma_c_ = g.sigma_c;
@@ -37,15 +46,22 @@ public:
         nSelfTaps = buildKernel_(g.n_beta, g.beta, g.mu_k, g.sigma_k, selfDy, selfDx, selfW);
         float beta1[GENOME_MAX_BETA] = {1.0f, 0.0f, 0.0f};
         nCrossTaps = buildKernel_(1, beta1, g.mu_kc, g.sigma_kc, crossDy, crossDx, crossW);
+        for (int i = 0; i < LUT_N; i++) {
+            float u = i / LUT_SCALE;
+            selfLUT_[i]  = invT_ * (2.0f * bell_(u, mu_, sigma_) - 1.0f);   // [-1/T, 1/T]
+            crossLUT_[i] = invT_ * bell_(u, mu_c_, sigma_c_);               // [0, 1/T]
+        }
     }
 
     inline Acc maccSelf(Acc acc, int t, State sample) const { return acc + selfW[t] * sample; }
     inline Acc maccCross(Acc acc, int t, State sample) const { return acc + crossW[t] * sample; }
 
     inline State apply(State before, Acc accSelf, Acc accCross, int ch) const {
-        float selfG = 2.0f * bell_(accSelf, mu_, sigma_) - 1.0f;       // [-1,1]
-        float presence = bell_(accCross, mu_c_, sigma_c_);             // [0,1], 0 when absent
-        float v = before + invT_ * (selfG + interactW_[ch] * presence);
+        int idxS = (int)(accSelf * LUT_SCALE + 0.5f);
+        int idxC = (int)(accCross * LUT_SCALE + 0.5f);
+        if (idxS < 0) idxS = 0; else if (idxS > LUT_N - 1) idxS = LUT_N - 1;
+        if (idxC < 0) idxC = 0; else if (idxC > LUT_N - 1) idxC = LUT_N - 1;
+        float v = before + selfLUT_[idxS] + interactW_[ch] * crossLUT_[idxC];
         return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
     }
 
@@ -77,6 +93,8 @@ private:
     float mu_ = 0.15f, sigma_ = 0.015f, invT_ = 0.1f;
     float mu_c_ = 0.20f, sigma_c_ = 0.05f;
     float interactW_[NCH] = {0.0f, 0.0f};
+    float selfLUT_[LUT_N];    // invT_ * (2*bell(u,mu,sigma) - 1)
+    float crossLUT_[LUT_N];   // invT_ * bell(u,mu_c,sigma_c)
 };
 
 }  // namespace chimera

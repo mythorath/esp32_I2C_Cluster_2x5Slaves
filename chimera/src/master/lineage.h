@@ -12,6 +12,7 @@ namespace chimera {
 
 enum LineageType : uint8_t {
     LIN_BIRTH = 0, LIN_DEATH, LIN_COLONIZE, LIN_MIGRATION, LIN_MUTATE, LIN_WILDCARD,
+    LIN_RESET,   // operator/serial full-environment reset (whole world reseeded)
 };
 
 struct LineageEvent {
@@ -63,6 +64,7 @@ public:
             case LIN_MIGRATION: return "migration";
             case LIN_MUTATE: return "mutate";
             case LIN_WILDCARD: return "wildcard";
+            case LIN_RESET: return "reset";
             default: return "?";
         }
     }

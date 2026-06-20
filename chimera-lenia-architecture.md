@@ -197,6 +197,8 @@ loop:
 ### Bandwidth reality (be honest, then tune)
 Halo as **uint8**: `128x13 = 1664 B` per neighbor. Per bank per generation =
 `5 nodes x (2 send + 2 recv) x 1.6KB ~= 33KB`.
+- @ 200kHz (current, ~20KB/s effective): **~1.6 s/gen** — conservative, robust on
+  the existing harness/pull-ups; a deliberate step up from the legacy 100kHz cluster.
 - @ 400kHz (~40KB/s effective): **~0.8 s/gen**.
 - @ ~1MHz with good 2k-3k pull-ups (~100KB/s): **~0.3 s/gen** (~3 gens/sec).
 

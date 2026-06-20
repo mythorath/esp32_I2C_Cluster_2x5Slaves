@@ -41,6 +41,14 @@ static constexpr uint8_t S3_ADDR_BASE = 0x08;  // Bus 0: 0x08..0x0C
 static constexpr uint8_t C3_ADDR_BASE = 0x18;  // Bus 1: 0x18..0x1C
 static constexpr int     NODES_PER_BANK = 5;
 
+// Bus clock (Hz). Single source of truth: the master sets the SCL clock and
+// both node banks pass the same value to Wire.begin() so slave peripheral
+// timing matches. 400 kHz (I2C fast mode) roughly halves per-generation bus
+// time vs 200 kHz; requires healthy pull-ups and short harness runs for 5
+// slaves per bus. ALL devices (master + both node banks) must run the same
+// value, so reflash every board when changing this.
+static constexpr uint32_t I2C_HZ = 400000;
+
 // ---------------------------------------------------------------------------
 // Opcodes (master -> node command byte, written as first byte of a transfer).
 // ---------------------------------------------------------------------------

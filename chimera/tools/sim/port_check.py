@@ -231,6 +231,58 @@ def check_multichannel_fixed(steps: int = 140) -> bool:
     return ok
 
 
+# --------------------------------------------------------------------------
+# Check 5: float growth LUT (S3 FloatPolicy) vs direct expf growth.
+# The S3 firmware replaced the two per-cell expf() calls in FloatPolicy::apply
+# with 1024-entry float LUTs indexed by the normalized convolution accumulator
+# (mirrors the fixed bank). This proves the LUT (a) matches direct expf growth to
+# within the quantization step and (b) keeps an Orbium alive + gliding.
+# --------------------------------------------------------------------------
+def check_float_growth_lut(steps: int = 220) -> bool:
+    p = LeniaParams()
+    R, IH, W = p.R, 40, 128
+    taps, _ = build_taps(p)
+
+    LUT_N = 1024
+    lut = np.array([(1.0 / p.T) * (2.0 * float(bell(np.array(i / (LUT_N - 1)), p.mu, p.sigma)) - 1.0)
+                    for i in range(LUT_N)], dtype=np.float64)
+
+    def conv(A):
+        top_halo = np.round(A[IH - R:IH, :] * 255) / 255.0
+        bot_halo = np.round(A[0:R, :] * 255) / 255.0
+        padded = np.vstack([top_halo, A, bot_halo])
+        U = np.zeros((IH, W))
+        for (ky, kx, wt) in taps:
+            U += wt * np.roll(padded[R + ky:R + ky + IH, :], -kx, axis=1)
+        return U
+
+    A_lut = np.zeros((IH, W))
+    A_lut[IH // 2 - 10:IH // 2 + 10, W // 2 - 10:W // 2 + 10] = ORBIUM
+    m0 = A_lut.sum()
+    cy0, cx0 = _com(A_lut)
+
+    max_growth_err = 0.0
+    for _ in range(steps):
+        U = conv(A_lut)
+        idx = np.clip(np.round(U * (LUT_N - 1)).astype(np.int64), 0, LUT_N - 1)
+        delta = lut[idx]                                   # LUT path (firmware)
+        direct = (1.0 / p.T) * growth(U, p)                # reference expf path
+        max_growth_err = max(max_growth_err, float(np.abs(delta - direct).max()))
+        A_lut = np.clip(A_lut + delta, 0.0, 1.0)
+
+    m1 = A_lut.sum()
+    cy1, cx1 = _com(A_lut)
+    dy = (cy1 - cy0 + IH / 2) % IH - IH / 2
+    dx = (cx1 - cx0 + W / 2) % W - W / 2
+    drift = float(np.hypot(dy, dx))
+    alive = 0.1 * m0 < m1 < 10 * m0 and drift > 2.0
+    err_ok = max_growth_err < 0.02                          # << one 1024-bin step of (1/T)*growth slope
+    ok = alive and err_ok
+    print(f"[5] float growth LUT vs expf: max growth err={max_growth_err:.2e} "
+          f"mass {m0:.1f}->{m1:.1f} drift={drift:.2f}  {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> None:
     print("=== Firmware algorithm port-check (numpy mirror of the C++ policies) ===")
     ok = True
@@ -238,6 +290,7 @@ def main() -> None:
     ok &= check_quantized_halo_float()
     ok &= check_fixed_point()
     ok &= check_multichannel_fixed()
+    ok &= check_float_growth_lut()
     print(f"RESULT: {'PASS - firmware math choices preserve life' if ok else 'FAIL'}")
     raise SystemExit(0 if ok else 1)
 

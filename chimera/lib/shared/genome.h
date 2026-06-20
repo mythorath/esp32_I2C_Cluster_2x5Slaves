@@ -14,6 +14,17 @@ namespace chimera {
 
 static constexpr int GENOME_MAX_BETA = 3;  // up to 3 kernel shells
 
+// Gene -> visible effect (a quick field guide for tuning watchability):
+//   T        : speed. lower = faster/twitchier motion (instinct), higher = calmer.
+//   mu/sigma : self-growth band. sigma too low -> dies, too high -> saturates.
+//   mu_k/sigma_k : self kernel shape (the organism's "body").
+//   mu_kc/sigma_kc : cross SENSING range. small sigma_kc = short-range ambush,
+//                    large = long-range pursuit/flee.
+//   mu_c/sigma_c : how dense the other species must be to trigger a reaction.
+//   w_prey (<0)  : how strongly predators suppress prey (flee/die). more negative
+//                  = more dramatic fleeing.
+//   w_pred (>0)  : how strongly prey feed predators (chase). larger = hungrier.
+
 struct __attribute__((packed)) Genome {
     uint8_t  R;                       // kernel radius (cells); v1 fixed at KERNEL_R
     uint8_t  n_beta;                  // number of active kernel shells (1..3)
@@ -150,6 +161,7 @@ inline void mutateGenome(Genome& g, Rng& rng, float rate, float floorRate = 0.01
     g.w_prey  += rng.normal() * 0.04f  * r;
     g.w_pred  += rng.normal() * 0.04f  * r;
     g.mu_c    += rng.normal() * 0.02f  * r;
+    g.sigma_kc += rng.normal() * 0.03f * r;   // evolve sensing range: ambush <-> chase
     g.generation++;
     clampGenome(g);
 }

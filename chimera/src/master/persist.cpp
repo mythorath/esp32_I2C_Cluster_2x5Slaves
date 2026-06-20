@@ -189,6 +189,24 @@ void LogStream::ackUpTo(uint32_t seq) {
     saveState();
 }
 
+void LogStream::clear() {
+    if (!fs_) return;
+    // Remove every segment file, then the state file, and restart numbering. Used
+    // by a full environment reset with clear_history (a deliberate fresh start).
+    File d = fs_->open(dir_);
+    if (d) {
+        for (File e = d.openNextFile(); e; e = d.openNextFile()) {
+            const char* nm = strrchr(e.name(), '/'); nm = nm ? nm + 1 : e.name();
+            if (atoi(nm) > 0) { char p[40]; segPath(atoi(nm), p, sizeof p); e.close(); fs_->remove(p); }
+            else e.close();
+        }
+        d.close();
+    }
+    char st[40]; snprintf(st, sizeof st, "%s/state", dir_);
+    fs_->remove(st);
+    seqMax_ = 0; lastAcked_ = 0; curSeg_ = 1; curSegBytes_ = 0;
+}
+
 void LogStream::maybeEvict(size_t minFreeBytes) {
     if (!evictable_) return;
     // Best-effort: LittleFS exposes totalBytes/usedBytes on the global object,

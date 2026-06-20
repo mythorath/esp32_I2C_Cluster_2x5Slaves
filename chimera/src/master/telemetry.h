@@ -32,6 +32,15 @@ public:
     // Durable fossil sink (called by the lineage trampoline).
     void onFossil(const LineageEvent& e);
 
+    // Operator command channel (Selis -> master "cmd" message). The handler must
+    // only QUEUE work; the master executes it off the hot I2C path. Args are kept
+    // primitive so this header stays free of ArduinoJson.
+    typedef void (*CommandFn)(const char* name, const char* pattern, bool clearHistory, void* ctx);
+    void onCommand(CommandFn fn, void* ctx) { cmdFn_ = fn; cmdCtx_ = ctx; }
+    void dispatchCommand(const char* name, const char* pattern, bool clearHistory) {
+        if (cmdFn_) cmdFn_(name, pattern, clearHistory, cmdCtx_);
+    }
+
     bool connected() const;
     bool wifiLinked() const { return wifiOk_; }
     const char* ip() const { return ip_; }
@@ -52,7 +61,13 @@ private:
     uint32_t lastSnapMs_ = 0;
     uint32_t lastWifiTryMs_ = 0;
     uint32_t wifiConnectStartMs_ = 0;
+    uint32_t wifiDownSinceMs_ = 0;   // 0 = link up; else millis() of first miss
     bool wifiConnecting_ = false;
+
+    // Tolerate transient beacon misses before tearing down the WS (anti-flap).
+    static constexpr uint32_t WIFI_DROP_GRACE_MS = 5000;
+    CommandFn cmdFn_ = nullptr;
+    void* cmdCtx_ = nullptr;
 
     void startWs();
     bool connectWifi(uint32_t waitMs);
