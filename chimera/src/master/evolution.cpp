@@ -70,11 +70,11 @@ void Evolution::islandStep(BusManager& bus, const StripStats* stats, Genome* gen
         float rate = (bank == BANK_A) ? RATE_A : RATE_B;
 
         if (rng_.unit() < WILDCARD_P) {
-            // wildcard: fresh noise + mutated default keeps diversity alive
-            genomes[worst] = defaultGenome((uint8_t)bank);
+            // wildcard: mutated bank personality + Orbium (keeps prey/predator chase alive)
+            genomes[worst] = (bank == BANK_A) ? instinctGenome(BANK_A) : memoryGenome(BANK_B);
             genomes[worst].lineage_id = 1000 + gen % 1000;
             mutateGenome(genomes[worst], rng_, rate * 1.5f);
-            if (bus.online(worst)) { bus.setGenome(worst, genomes[worst]); bus.seed(worst, SEED_NOISE, esp_random()); }
+            if (bus.online(worst)) { bus.setGenome(worst, genomes[worst]); bus.seed(worst, SEED_ORBIUM, esp_random()); }
             if (lineage) lineage->record(LIN_WILDCARD, gen, -1, worst, genomes[worst].lineage_id, 0, stats[worst].fitness);
         } else {
             genomes[worst] = genomes[best];                 // colonize
@@ -105,7 +105,7 @@ void Evolution::islandStep(BusManager& bus, const StripStats* stats, Genome* gen
         // Seam transform (mirrors halo_router): a migrant adopts the destination
         // bank's metabolism - fast/volatile in instinct, slow/persistent in memory -
         // while keeping its evolved species-interaction matrix.
-        genomes[dst].T = (dstBank == BANK_A) ? 6.0f : 14.0f;
+        genomes[dst].T = (dstBank == BANK_A) ? 5.5f : 10.0f;
         mutateGenome(genomes[dst], rng_, (dstBank == BANK_A) ? RATE_A : RATE_B);
         if (bus.online(dst)) { bus.setGenome(dst, genomes[dst]); bus.seed(dst, SEED_ORBIUM, 0); }
         vitals.migrations++;

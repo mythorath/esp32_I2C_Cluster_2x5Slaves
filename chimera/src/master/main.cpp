@@ -57,7 +57,7 @@ static HaloEvents haloEv;
 static uint32_t generation = 0;
 static uint32_t lastSlow = 0;
 static uint32_t lastReconcile = 0;
-static const uint32_t SLOW_MS = 400;          // off-hot-path cadence
+static const uint32_t SLOW_MS = 250;          // off-hot-path cadence (field viz ~4 Hz)
 static const uint32_t RECONCILE_MS = 3000;    // membership re-check cadence
 static const uint32_t BRINGUP_MS = 20000;     // patient power-on join window
 
@@ -70,7 +70,7 @@ static void seedNode(int i) {
     genomes[i] = (stripBank(i) == BANK_A) ? instinctGenome(BANK_A) : memoryGenome(BANK_B);
     genomes[i].lineage_id = i;
     bus.setGenome(i, genomes[i]);
-    bus.seed(i, (i == 0 || i == NODES_PER_BANK) ? SEED_ORBIUM : SEED_NOISE, 0xC0DE + i);
+    bus.seed(i, SEED_ORBIUM, 0xC0DE + i);
     seeded[i] = true;
 }
 
@@ -121,6 +121,10 @@ static void bringUp(uint32_t windowMs) {
     printInventory();
 }
 
+static float prevComX[N_STRIPS];
+static float prevComY[N_STRIPS];
+static bool prevComOk[N_STRIPS] = {false};
+
 static void gatherVitals() {
     float massSum = 0, mass1Sum = 0, entSum = 0, actSum = 0, bestFit = -1;
     int alive = 0, bestStrip = -1;
@@ -128,6 +132,18 @@ static void gatherVitals() {
         vitals.nodeOnline[i] = bus.online(i);
         if (!bus.online(i)) continue;
         if (!bus.readStats(i, stats[i])) continue;
+        // Reward visible motion so island evolution selects gliders, not static blobs.
+        if (!isnan(stats[i].com_x) && !isnan(stats[i].com_y) && prevComOk[i]) {
+            float dx = stats[i].com_x - prevComX[i];
+            float dy = stats[i].com_y - prevComY[i];
+            float motion = sqrtf(dx * dx + dy * dy) / (float)STRIP_H;
+            stats[i].fitness += 1.8f * motion;
+        }
+        if (!isnan(stats[i].com_x) && !isnan(stats[i].com_y)) {
+            prevComX[i] = stats[i].com_x;
+            prevComY[i] = stats[i].com_y;
+            prevComOk[i] = true;
+        }
         massSum += stats[i].mass; mass1Sum += stats[i].mass1;
         entSum += stats[i].entropy; actSum += stats[i].activity;
         alive++;

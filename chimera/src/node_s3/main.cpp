@@ -37,7 +37,7 @@ static LeniaStrip<FloatPolicy> strip;
 static const int HIST_N = 4;   // 2-channel float buffers are larger; keep history modest
 // Bank B "memory": fraction of the previous field blended back each gen -> the
 // memory bank's organisms persist and trail (vs the instinct bank's sharp ones).
-static constexpr float MEMORY_ECHO = 0.25f;
+static constexpr float MEMORY_ECHO = 0.10f;
 
 // ----- staged transfer buffers (filled after each generation) -----
 static uint8_t haloTop[HALO_BYTES];      // our top edge, for neighbor above
@@ -213,7 +213,7 @@ static void computeGeneration(bool fromMaster) {
     pushHistory();
     persistence = computePersistence();
     stats = strip.computeStats();
-    stats.fitness += 1.0f * persistence;   // Bank B values temporal persistence
+    stats.fitness += 0.3f * persistence * (0.5f + stats.activity);
     buildTile();
     haveHaloTop = haveHaloBottom = false;
     nodeStatus = ST_READY;

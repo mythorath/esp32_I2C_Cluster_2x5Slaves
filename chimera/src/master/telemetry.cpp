@@ -36,9 +36,35 @@ static void pumpWs() { ws.loop(); }
 void TelemetryClient::service() { pumpWs(); }
 
 // ----- helpers to emit the JSON envelopes (shared by live + replay) -----
+static void formatEventText(const LineageEvent& e, char* out, size_t cap) {
+    switch (e.type) {
+        case LIN_BIRTH:
+            snprintf(out, cap, "organism #%u born on strip %d", e.organismId, (int)e.fromStrip);
+            break;
+        case LIN_DEATH:
+            snprintf(out, cap, "organism #%u vanished", e.organismId);
+            break;
+        case LIN_COLONIZE:
+            snprintf(out, cap, "strip %d colonized from strip %d", (int)e.toStrip, (int)e.fromStrip);
+            break;
+        case LIN_MIGRATION:
+            snprintf(out, cap, "genome migrated %d -> %d across the seam", (int)e.fromStrip, (int)e.toStrip);
+            break;
+        case LIN_WILDCARD:
+            snprintf(out, cap, "wildcard reseed on strip %d", (int)e.toStrip);
+            break;
+        case LIN_MUTATE:
+            snprintf(out, cap, "mutation on strip %d", (int)e.toStrip);
+            break;
+        default:
+            snprintf(out, cap, "%s %d->%d", Lineage::typeName(e.type), (int)e.fromStrip, (int)e.toStrip);
+            break;
+    }
+}
+
 static void sendEventJson(uint32_t eseq, const LineageEvent& e) {
     if (!ws.isConnected()) return;
-    StaticJsonDocument<256> d;
+    StaticJsonDocument<320> d;
     d["t"] = "event";
     d["eseq"] = eseq;
     d["gen"] = e.gen;
@@ -48,7 +74,11 @@ static void sendEventJson(uint32_t eseq, const LineageEvent& e) {
     d["lineageId"] = e.lineageId;
     d["organismId"] = e.organismId;
     d["fitness"] = e.fitness;
+    char text[80];
+    formatEventText(e, text, sizeof text);
+    d["text"] = text;
     String s; serializeJson(d, s); ws.sendTXT(s);
+    pumpWs();
 }
 
 static void sendSnapJson(uint32_t vseq, const VitalsSnap& v) {
@@ -283,7 +313,7 @@ void TelemetryClient::broadcastField(const Stitch& stitch) {
 
 void TelemetryClient::broadcastVitals(const WorldVitals& v) {
     if (!ws.isConnected()) return;
-    StaticJsonDocument<512> d;
+    StaticJsonDocument<1024> d;
     d["t"] = "vitals";
     d["gen"] = v.generation;
     d["online"] = v.online;
@@ -299,6 +329,15 @@ void TelemetryClient::broadcastVitals(const WorldVitals& v) {
     d["deaths"] = v.deaths;
     d["migrations"] = v.migrations;
     d["seamCrossings"] = v.seamCrossings;
+    if (stats_) {
+        JsonArray strips = d.createNestedArray("strips");
+        for (int i = 0; i < N_STRIPS; i++) {
+            JsonObject row = strips.createNestedObject();
+            row["strip"] = i;
+            row["bank"] = stripBank(i);
+            row["fitness"] = stats_[i].fitness;
+        }
+    }
     String s; serializeJson(d, s); ws.sendTXT(s);
     pumpWs();
 }

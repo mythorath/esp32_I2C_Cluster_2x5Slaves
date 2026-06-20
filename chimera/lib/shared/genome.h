@@ -72,17 +72,17 @@ inline Genome defaultGenome(uint8_t bank) {
 // INSTINCT (Bank A / C3): fast dt, strong coupling -> twitchy, reactive chases.
 inline Genome instinctGenome(uint8_t bank) {
     Genome g = defaultGenome(bank);
-    g.T = 6.0f;
-    g.w_prey = -0.26f;
-    g.w_pred = +0.32f;
+    g.T = 5.5f;
+    g.w_prey = -0.30f;
+    g.w_pred = +0.36f;
     return g;
 }
-// MEMORY (Bank B / S3): slow dt, gentle coupling -> calm, persistent drift.
+// MEMORY (Bank B / S3): moderate dt, visible coupling — still calmer than instinct.
 inline Genome memoryGenome(uint8_t bank) {
     Genome g = defaultGenome(bank);
-    g.T = 14.0f;
-    g.w_prey = -0.12f;
-    g.w_pred = +0.15f;
+    g.T = 10.0f;
+    g.w_prey = -0.18f;
+    g.w_pred = +0.22f;
     return g;
 }
 

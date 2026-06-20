@@ -37,14 +37,14 @@ private:
 
     // cadences (generations)
     static constexpr uint32_t HOMEO_EVERY = 20;
-    static constexpr uint32_t ISLAND_EVERY = 300;
-    static constexpr uint32_t MIGRATE_EVERY = 600;
+    static constexpr uint32_t ISLAND_EVERY = 180;
+    static constexpr uint32_t MIGRATE_EVERY = 360;
 
     // homeostasis target bands + gains. NOTE: a moving glider is a low-mass but
     // HIGH-activity world - it's interesting, not dying - so "dying" is gated on
     // BOTH low mass AND low activity. Homeostasis maintains a living world in
     // band; resurrecting an empty one is evolution's wildcard-reseed job.
-    static constexpr float MASS_LO = 0.010f, MASS_HI = 0.220f;
+    static constexpr float MASS_LO = 0.010f, MASS_HI = 0.280f;
     static constexpr float ACT_LO = 0.005f;
     static constexpr float D_SIGMA = 0.0008f, D_MU = 0.003f, D_T = 0.3f;
 

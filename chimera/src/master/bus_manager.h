@@ -61,7 +61,7 @@ private:
 
     static constexpr int PIN_I2C0_SDA = 21, PIN_I2C0_SCL = 22, ATTN0 = 23;
     static constexpr int PIN_I2C1_SDA = 32, PIN_I2C1_SCL = 33, ATTN1 = 25;
-    static constexpr uint32_t I2C_HZ = 100000;   // conservative for bring-up; bump later to optimize
+    static constexpr uint32_t I2C_HZ = 400000;
     static constexpr int MAX_RETRY = 3;
 
     bool online_[N_STRIPS] = {false};
