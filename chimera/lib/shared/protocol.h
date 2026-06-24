@@ -43,11 +43,17 @@ static constexpr int     NODES_PER_BANK = 5;
 
 // Bus clock (Hz). Single source of truth: the master sets the SCL clock and
 // both node banks pass the same value to Wire.begin() so slave peripheral
-// timing matches. 400 kHz (I2C fast mode) roughly halves per-generation bus
-// time vs 200 kHz; requires healthy pull-ups and short harness runs for 5
-// slaves per bus. ALL devices (master + both node banks) must run the same
+// timing matches. ALL devices (master + both node banks) must run the same
 // value, so reflash every board when changing this.
-static constexpr uint32_t I2C_HZ = 400000;
+//
+// Speed-ceiling test (master + farthest slave per bus, full 10-node I2C harness):
+//   600 kHz : 10/10 online, xferFails=0 over 18 gens   PASS
+//   800 kHz : 10/10 online, xferFails=0 over 20 gens   PASS
+//   1.0 MHz : 10/10 online, xferFails=0 over 23 gens   PASS (I2C Fast-mode+ ceiling)
+//   1.2 MHz : 9/10 online (a node fails to probe/admit) FAIL -> past reliable limit
+// 1.0 MHz is the chosen production speed: the highest fully-stable rate on this
+// harness/pull-ups. Going above the 1 MHz spec drops a node at bring-up.
+static constexpr uint32_t I2C_HZ = 1000000;
 
 // ---------------------------------------------------------------------------
 // Opcodes (master -> node command byte, written as first byte of a transfer).
